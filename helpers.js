@@ -137,12 +137,12 @@ export function getFnIsAliveViaNsPs(ns) {
  * @param {args=} args - args to be passed in as arguments to command being run as a new script.
  * @param {bool=} verbose - (default false) If set to true, pid and result of command are logged.
  **/
-export async function getNsDataThroughFile(ns, command, fName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
-    checkNsInstance(ns, '"getNsDataThroughFile"');
-    if (!verbose) disableLogs(ns, ['run', 'isRunning']);
-    const run = ns.run.bind(ns); // Bind the 'run' function to the 'ns' object
-    return await getNsDataThroughFile_Custom(ns, run, command, fName, args, verbose, maxRetries, retryDelayMs);
-}
+// export async function getNsDataThroughFile(ns, command, fName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
+//     checkNsInstance(ns, '"getNsDataThroughFile"');
+//     if (!verbose) disableLogs(ns, ['run', 'isRunning']);
+//     const run = ns.run.bind(ns); // Bind the 'run' function to the 'ns' object
+//     return await getNsDataThroughFile_Custom(ns, run, command, fName, args, verbose, maxRetries, retryDelayMs);
+// }
 
 /**
  * An advanced version of getNsDataThroughFile that lets you pass your own "fnRun" implementation to reduce RAM requirements
@@ -152,30 +152,49 @@ export async function getNsDataThroughFile(ns, command, fName, args = [], verbos
  * @param {function} fnRun - A single-argument function used to start the new sript, e.g. `ns.run` or `(f,...args) => ns.exec(f, "home", ...args)`
  * @param {args=} args - args to be passed in as arguments to command being run as a new script.
  **/
-async function getNsDataThroughFile(ns, func, filename, tempFilename, ...funcArgs) {
-    const strFuncArgs = JSON.stringify(funcArgs);
-    const cmd = `${func.toString()}(${strFuncArgs});`;
-    const hash = hashCode(cmd);
-    const tempFile = `${tempFilename}-${hash}.txt`;
-    if (ns.fileExists(tempFile)) {
-        const fileData = ns.read(tempFile);
-        return JSON.parse(fileData);
-    } else {
-        ns.write(filename, cmd, 'w');
-        ns.run(filename);
-        let success = false;
-        let tries = 0;
-        while (!success && tries < 3) {
-            if (ns.fileExists(tempFile)) {
-                success = true;
-                const fileData = ns.read(tempFile);
-                return JSON.parse(fileData);
-            }
-            tries++;
-        }
-        throw new Error(`Error getting data through file. Tried ${tries} times.`);
-    }
-}
+// async function getNsDataThroughFile(ns, func, filename, tempFilename, ...funcArgs) {
+//     const strFuncArgs = JSON.stringify(funcArgs);
+//     const cmd = `${func.toString()}(${strFuncArgs});`;
+//     const hash = hashCode(cmd);
+//     const tempFile = `${tempFilename}-${hash}.txt`;
+//     if (ns.fileExists(tempFile)) {
+//         const fileData = ns.read(tempFile);
+//         return JSON.parse(fileData);
+//     } else {
+//         ns.write(filename, cmd, 'w');
+//         ns.run(filename);
+//         let success = false;
+//         let tries = 0;
+//         while (!success && tries < 3) {
+//             if (ns.fileExists(tempFile)) {
+//                 success = true;
+//                 const fileData = ns.read(tempFile);
+//                 return JSON.parse(fileData);
+//             }
+//             tries++;
+//         }
+//         throw new Error(`Error getting data through file. Tried ${tries} times.`);
+//     }
+// }
+
+// Attempting to combine these two functions
+
+export async function getNsDataThroughFile(ns, command, fName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
+    checkNsInstance(ns, '"getNsDataThroughFile"');
+    if (!verbose) disableLogs(ns, ['run', 'isRunning']);
+    const run = ns.run.bind(ns); // Bind the 'run' function to the 'ns' object
+    return await (async function getNsDataThroughFile_Private(ns, func, filename, tempFilename, ...funcArgs) {
+        const strFuncArgs = JSON.stringify(funcArgs);
+        const cmd = `${func.toString()}(${strFuncArgs});`;
+        const hash = hashCode(cmd);
+        const tempFile = `${tempFilename}-${hash}.txt`;
+        if (ns.fileExists(tempFile)) {
+            const fileData = ns.read(tempFile);
+            return JSON.parse(fileData);
+        } else {
+            ns.write(filename, cmd, 'w');
+            ns
+
 
 /** Evaluate an arbitrary ns command by writing it to a new script and then running or executing it.
  * @param {NS} ns - The nestcript instance passed to your script's main entry point
