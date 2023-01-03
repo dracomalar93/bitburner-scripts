@@ -16,6 +16,7 @@ export function autocomplete(data, args) {
 
 /** @param {NS} ns **/
 export async function main(ns) {
+    const serversInfo = await getAllServersInfo(ns);
     const options = getConfiguration(ns, argsSchema);
     if (!options || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
     const doc = eval('document');
@@ -187,8 +188,9 @@ async function getGangInfo(ns) {
 /** @param {NS} ns 
  * @returns {Promise<Server[]>} **/
 async function getAllServersInfo(ns) {
+    const getServer = ns.getServer.bind(ns);
     const serverNames = await getNsDataThroughFile(ns, 'scanAllServers(ns)', '/Temp/scanAllServers.txt');
-    return await getNsDataThroughFile(ns, 'ns.args.map(ns.getServer)', '/Temp/getServers.txt', serverNames);
+    return await getNsDataThroughFile(ns, getServer, 'ns.args.map(ns.getServer)', '/Temp/getServers.txt', serverNames);
 }
 
 function addCSS(doc) {
