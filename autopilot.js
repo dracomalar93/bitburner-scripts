@@ -4,6 +4,9 @@ import {
 	formatMoney, formatDuration
 } from './helpers.js'
 
+const run = ns.run.bind(ns); {
+	run("/Temp/ps-other-instances.txt.js",1,"home","autopilot.js");
+}
 const persistentLog = "log.autopilot.txt";
 const factionManagerOutputFile = "/Temp/affordable-augs.txt"; // Temp file produced by faction manager with status information
 const casinoFlagFile = "/Temp/ran-casino.txt";
@@ -39,7 +42,9 @@ export function autocomplete(data, args) {
 
 let playerInGang, rushGang; // Tells us whether we're should be trying to work towards getting into a gang
 let wdHack; // If the WD server is available (i.e. TRP is installed), caches the required hack level
-let ranCasino; // Flag to indicate whether we've stolen 10b from the casino yet
+const run = ns.run.bind(ns); {
+	run("/Temp/ps-other-instances.txt.js",1,"home","autopilot.js");
+}let ranCasino; // Flag to indicate whether we've stolen 10b from the casino yet
 let reservedPurchase; // Flag to indicate whether we've reservedPurchase money and can still afford augmentations
 let reserveForDaedalus, daedalusUnavailable; // Flags to indicate that we should be keeping 100b cash on hand to earn an invite to Daedalus
 let lastScriptsCheck; // Last time we got a listing of all running scripts
