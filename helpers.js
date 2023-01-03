@@ -140,7 +140,7 @@ export function getFnIsAliveViaNsPs(ns) {
 export async function getNsDataThroughFile(ns, command, fName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
     checkNsInstance(ns, '"getNsDataThroughFile"');
     if (!verbose) disableLogs(ns, ['run', 'isRunning']);
-    const run = ns.run.bind(ns); // V2.2 Update
+    const run = ns.run.bind(ns); // Bind the 'run' function to the 'ns' object
     return await getNsDataThroughFile_Custom(ns, run, command, fName, args, verbose, maxRetries, retryDelayMs);
 }
 
