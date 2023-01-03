@@ -174,7 +174,7 @@ export async function getNsDataThroughFile_Custom(ns, fnRun, command, fName, arg
         `);}catch(e){r="ERROR: "+(typeof e=='string'?e:e.message||JSON.stringify(e));}\n` +
         `const f="${fName}"; if(ns.read(f)!==r) await ns.write(f,r,'w')`;
     // Run the command with auto-retries if it fails
-    const pid = await runCommand_Custom(ns, fnRun, commandToFile, fNameCommand, args, verbose, maxRetries, retryDelayMs);
+    const pid = await runCommand_Custom(ns, fnRun, commandToFile, fNameCommand, args, verbose, maxRetries, retryDelayMs, Number(threads));
     // Wait for the process to complete. Note, as long as the above returned a pid, we don't actually have to check it, just the file contents
     const fnIsAlive = (ignored_pid) => ns.read(fName) === initialContents;
     await waitForProcessToComplete_Custom(ns, fnIsAlive, pid, verbose);
@@ -205,7 +205,7 @@ export async function runCommand(ns, command, fileName, args = [], verbose = fal
     checkNsInstance(ns, '"runCommand"');
     if (!verbose) disableLogs(ns, ['run']);
     const run = ns.run.bind(ns); // V2.2 Update
-    return await runCommand_Custom(ns, run, command, fileName, args, verbose, maxRetries, retryDelayMs);
+    return await runCommand_Custom(ns, run, command, fileName, args, verbose, maxRetries, retryDelayMs, Number(threads));
 }
 
 const _cachedExports = [];
@@ -232,7 +232,7 @@ function getExports(ns) {
  * @param {string=} fileName - (default "/Temp/{commandhash}-data.txt") The name of the file to which data will be written to disk by a temporary process
  * @param {args=} args - args to be passed in as arguments to command being run as a new script.
  **/
-async function runCommand_Custom(ns, fnRun, command, fName, args, verbose, maxRetries, retryDelayMs) {
+async function runCommand_Custom(ns, fnRun, command, fName, args, verbose, maxRetries, retryDelayMs, Number) {
     let lastError;
     const startTime = Date.now();
     for (let i = 1; i <= maxRetries; i++) {
