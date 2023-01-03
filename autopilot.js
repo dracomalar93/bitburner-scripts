@@ -1,7 +1,7 @@
 import {
 	log, getFilePath, getConfiguration, instanceCount, getNsDataThroughFile, runCommand, waitForProcessToComplete,
 	getActiveSourceFiles, tryGetBitNodeMultipliers, getStocksValue, unEscapeArrayArgs,
-	formatMoney, formatDuration
+	formatMoney, formatDuration,
 } from './helpers.js'
 
 const persistentLog = "log.autopilot.txt";
@@ -634,7 +634,8 @@ async function manageReservedMoney(ns, player, stocksValue) {
  * @param {NS} ns */
 function launchScriptHelper(ns, baseScriptName, args = [], convertFileName = true) {
 	ns.tail(); // If we're going to be launching scripts, show our tail window so that we can easily be killed if the user wants to interrupt.
-	const pid = ns.run(convertFileName ? getFilePath(baseScriptName) : baseScriptName, 1, ...args);
+	const run = ns.run.bind(ns);
+	const pid = run(convertFileName ? getFilePath(baseScriptName) : baseScriptName, 1, ...args);
 	if (!pid)
 		log(ns, `ERROR: Failed to launch ${baseScriptName} with args: [${args.join(", ")}]`, true, 'error');
 	else
