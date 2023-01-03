@@ -137,12 +137,7 @@ export function getFnIsAliveViaNsPs(ns) {
  * @param {args=} args - args to be passed in as arguments to command being run as a new script.
  * @param {bool=} verbose - (default false) If set to true, pid and result of command are logged.
  **/
-// export async function getNsDataThroughFile(ns, command, fName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
-//     checkNsInstance(ns, '"getNsDataThroughFile"');
-//     if (!verbose) disableLogs(ns, ['run', 'isRunning']);
-//     const run = ns.run.bind(ns); // Bind the 'run' function to the 'ns' object
-//     return await getNsDataThroughFile_Custom(ns, run, command, fName, args, verbose, maxRetries, retryDelayMs);
-// }
+
 /**
  * An advanced version of getNsDataThroughFile that lets you pass your own "fnRun" implementation to reduce RAM requirements
  * Importing incurs no RAM (now that ns.read is free) plus whatever fnRun you provide it
