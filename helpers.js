@@ -235,12 +235,12 @@ function getExports(ns) {
 async function runCommand_Custom(ns, fnRun, command, fName, args, verbose, maxRetries, retryDelayMs, Number(threads)) {
     if (typeof threads === 'string') {
     threads = getRunningThreadCount(ns, threads);
-    }
+    } 
     let lastError;
     const startTime = Date.now();
     for (let i = 1; i <= maxRetries; i++) {
         try {
-            return await fnRun(fName, ...args);
+            return await fnRun(fName, Number(threads), ...args);
         } catch (e) {
             lastError = e;
             if (verbose) log(ns, `[ERROR] runCommand_Custom failed. Retrying (${i}/${maxRetries})...`, e);
