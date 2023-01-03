@@ -232,7 +232,10 @@ function getExports(ns) {
  * @param {string=} fileName - (default "/Temp/{commandhash}-data.txt") The name of the file to which data will be written to disk by a temporary process
  * @param {args=} args - args to be passed in as arguments to command being run as a new script.
  **/
-async function runCommand_Custom(ns, fnRun, command, fName, args, verbose, maxRetries, retryDelayMs, Number) {
+async function runCommand_Custom(ns, fnRun, command, fName, args, verbose, maxRetries, retryDelayMs, Number(threads)) {
+    if (typeof threads === 'string') {
+    threads = getRunningThreadCount(ns, threads);
+    }
     let lastError;
     const startTime = Date.now();
     for (let i = 1; i <= maxRetries; i++) {
