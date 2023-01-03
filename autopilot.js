@@ -4,8 +4,6 @@ import {
 	formatMoney, formatDuration
 } from './helpers.js'
 
-const run = ns.run.bind(ns);
-run("/Temp/ps-other-instances.txt.js",1,"home","autopilot.js");
 const persistentLog = "log.autopilot.txt";
 const factionManagerOutputFile = "/Temp/affordable-augs.txt"; // Temp file produced by faction manager with status information
 const casinoFlagFile = "/Temp/ran-casino.txt";
