@@ -23,10 +23,11 @@ export async function main(ns) {
     const hook0 = doc.getElementById('overview-extra-hook-0');
     const hook1 = doc.getElementById('overview-extra-hook-1');
     const dictSourceFiles = await getActiveSourceFiles(ns, false); // Find out what source files the user has unlocked
-    let playerInfo = await getNsDataThroughFile(ns, 'ns.getPlayer()', '/Temp/getPlayer.txt');
+    playerInfo = await getNsDataThroughFile(ns, getPlayer, '/Temp/getPlayer.txt'); // V2.2 Update
     const bitNode = playerInfo.bitNodeN;
     let inBladeburner = playerInfo.inBladeburner;
     disableLogs(ns, ['sleep']);
+    const getPlayer = ns.getPlayer.bind(ns); // V2.2 Update
 
     // Hook script exit to clean up after ourselves.
     ns.atExit(() => hook1.innerHTML = hook0.innerHTML = "");
@@ -72,7 +73,8 @@ export async function main(ns) {
             addHud("Scr Exp", formatNumberShort(ns.getTotalScriptExpGain(), 3, 2) + '/sec', "Total 'instantenous' hack experience per second being earned across all scripts running on all servers.");
 
             // Show reserved money
-            const reserve = Number(ns.read("reserve.txt") || 0);
+            const read = ns.read.bind(ns); // V2.2 Update
+            const reserve = Number(read("reserve.txt") || 0);
             if (reserve > 0) // Bitburner bug: Trace amounts of share power sometimes left over after we stop sharing
                 addHud("Reserve", formatNumberShort(reserve, 3, 2), "Most scripts will leave this much money unspent. Remove with `run reserve.js 0`");
 
@@ -106,7 +108,7 @@ export async function main(ns) {
 
             // Show number of kills if explicitly enabled
             if (options['show-peoplekilled']) {
-                playerInfo = await getNsDataThroughFile(ns, 'ns.getPlayer()', '/Temp/getPlayer.txt');
+                playerInfo = await getNsDataThroughFile(ns, 'getPlayer()', '/Temp/getPlayer.txt');
                 const numPeopleKilled = playerInfo.numPeopleKilled;
                 addHud("Kills", formatSixSigFigs(numPeopleKilled), "Count of successful Homicides. Note: The most kills you need is 30 for 'Speakers for the Dead'");
             }
@@ -114,10 +116,10 @@ export async function main(ns) {
             // Show Bladeburner Rank and Skill Points
             if (7 in dictSourceFiles || 7 == bitNode) { // Bladeburner API unlocked
                 inBladeburner = inBladeburner || playerInfo?.inBladeburner || // Avoid RAM dodge call if we have this info already
-                    (playerInfo = await getNsDataThroughFile(ns, 'ns.getPlayer()', '/Temp/getPlayer.txt')).inBladeburner;
+                    (playerInfo = await getNsDataThroughFile(ns, getPlayer, '/Temp/getPlayer.txt')).inBladeburner; // V2.2 Update
                 if (inBladeburner) {
-                    const bbRank = await getNsDataThroughFile(ns, 'ns.bladeburner.getRank()', '/Temp/bladeburner-getRank.txt');
-                    const bbSP = await getNsDataThroughFile(ns, 'ns.bladeburner.getSkillPoints()', '/Temp/bladeburner-getSkillPoints.txt');
+                    const bbRank = await getNsDataThroughFile(ns, 'bladeburner.getRank()', '/Temp/bladeburner-getRank.txt');
+                    const bbSP = await getNsDataThroughFile(ns, 'bladeburner.getSkillPoints()', '/Temp/bladeburner-getSkillPoints.txt');
                     addHud("BB Rank", formatSixSigFigs(bbRank), "Your current bladeburner rank");
                     addHud("BB SP", formatSixSigFigs(bbSP), "Your current unspent bladeburner skill points");
                 }
@@ -150,7 +152,8 @@ export async function main(ns) {
             }
 
             // Show current share power
-            const sharePower = await getNsDataThroughFile(ns, 'ns.getSharePower()', '/Temp/getSharePower.txt');
+            const getSharePower = ns.getSharePower.bind(ns); // V2.2 Update
+            const sharePower = await getNsDataThroughFile(ns, getSharePower, '/Temp/getSharePower.txt');
             if (sharePower > 1.0001) // Bitburner bug: Trace amounts of share power sometimes left over after we stop sharing
                 addHud("Share Pwr", formatNumberShort(sharePower, 3, 2),
                     "Uses RAM to boost faction reputation gain rate while working for factions (capped at 1.5) " +
