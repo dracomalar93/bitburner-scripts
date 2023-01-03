@@ -80,13 +80,11 @@ export function formatDuration(duration) {
 
 /** Generate a hashCode for a string that is pretty unique most of the time */
 export function hashCode(s) {
-  if (typeof s !== 'string') {
-    return 0;
-  }
-  return s.split("").reduce(function (a, b) {
-    a = ((a << 5) - a) + b.charCodeAt(0);
-    return a & a;
-  }, 0);
+    if (typeof s !== 'string') {
+        return 0;
+    }
+
+    return s.split("").reduce(function (a, b) { a = ((a << 5) - a) + b.charCodeAt(0); return a & a }, 0);
 }
 
 /** @param {NS} ns **/
@@ -142,7 +140,7 @@ export function getFnIsAliveViaNsPs(ns) {
 export async function getNsDataThroughFile(ns, command, fName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
     checkNsInstance(ns, '"getNsDataThroughFile"');
     if (!verbose) disableLogs(ns, ['run', 'isRunning']);
-    const run = ns.run.bind(ns);
+    const run = ns.run.bind(ns); // V2.2 Update
     return await getNsDataThroughFile_Custom(ns, run, command, fName, args, verbose, maxRetries, retryDelayMs);
 }
 
@@ -201,7 +199,7 @@ export async function getNsDataThroughFile_Custom(ns, fnRun, command, fName, arg
 export async function runCommand(ns, command, fileName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
     checkNsInstance(ns, '"runCommand"');
     if (!verbose) disableLogs(ns, ['run']);
-    const run = ns.run.bind(ns);
+    const run = ns.run.bind(ns); // V2.2 Update
     return await runCommand_Custom(ns, run, command, fileName, args, verbose, maxRetries, retryDelayMs);
 }
 
@@ -391,8 +389,7 @@ export async function getActiveSourceFiles_Custom(ns, fnGetNsDataThroughFile, in
     // If the user is currently in a given bitnode, they will have its features unlocked
     if (includeLevelsFromCurrentBitnode) {
         try {
-            const getPlayer = ns.getPlayer.bind(ns);
-            const bitNodeN = (await fnGetNsDataThroughFile(ns, getPlayer(), '/Temp/player-info.txt')).bitNodeN;
+            const bitNodeN = (await fnGetNsDataThroughFile(ns, 'ns.getPlayer()', '/Temp/player-info.txt')).bitNodeN;
             dictSourceFiles[bitNodeN] = Math.max(3, dictSourceFiles[bitNodeN] || 0);
         } catch { /* We are expected to be fault-tolerant in low-ram conditions */ }
     }
