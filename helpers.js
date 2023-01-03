@@ -152,41 +152,29 @@ export async function getNsDataThroughFile(ns, command, fName, args = [], verbos
  * @param {function} fnRun - A single-argument function used to start the new sript, e.g. `ns.run` or `(f,...args) => ns.exec(f, "home", ...args)`
  * @param {args=} args - args to be passed in as arguments to command being run as a new script.
  **/
-export async function getNsDataThroughFile_Custom(ns, fnRun, command, fName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
-    checkNsInstance(ns, '"getNsDataThroughFile_Custom"');
-    if (!verbose) disableLogs(ns, ['read']);
-    const commandHash = hashCode(command);
-    fName = fName || `/Temp/${commandHash}-data.txt`;
-    const fNameCommand = (fName || `/Temp/${commandHash}-command`) + '.js'
-    // Pre-write contents to the file that will allow us to detect if our temp script never got run
-    const initialContents = "<Insufficient RAM>";
-    await ns.write(fName, initialContents, 'w');
-    // Prepare a command that will write out a new file containing the results of the command
-    // unless it already exists with the same contents (saves time/ram to check first)
-    // If an error occurs, it will write an empty file to avoid old results being misread.
-    const commandToFile = `let r;try{r=JSON.stringify(\n` +
-        `    ${command}\n` +
-        `);}catch(e){r="ERROR: "+(typeof e=='string'?e:e.message||JSON.stringify(e));}\n` +
-        `const f="${fName}"; if(ns.read(f)!==r) await ns.write(f,r,'w')`;
-    // Run the command with auto-retries if it fails
-    const pid = await runCommand_Custom(ns, fnRun, commandToFile, fNameCommand, args, verbose, maxRetries, retryDelayMs);
-    // Wait for the process to complete. Note, as long as the above returned a pid, we don't actually have to check it, just the file contents
-    const fnIsAlive = (ignored_pid) => ns.read(fName) === initialContents;
-    await waitForProcessToComplete_Custom(ns, fnIsAlive, pid, verbose);
-    if (verbose) log(ns, `Process ${pid} is done. Reading the contents of ${fName}...`);
-    // Read the file, with auto-retries if it fails // TODO: Unsure reading a file can fail or needs retrying. 
-    let lastRead;
-    const fileData = await autoRetry(ns, () => ns.read(fName),
-        f => (lastRead = f) !== undefined && f !== "" && f !== initialContents && !(typeof f == "string" && f.startsWith("ERROR: ")),
-        () => `\nns.read('${fName}') returned a bad result: "${lastRead}".` +
-            `\n  Script:  ${fNameCommand}\n  Args:    ${JSON.stringify(args)}\n  Command: ${command}` +
-            (lastRead == undefined ? '\nThe developer has no idea how this could have happened. Please post a screenshot of this error on discord.' :
-                lastRead == initialContents ? `\nThe script that ran this will likely recover and try again later once you have more free ram.` :
-                    lastRead == "" ? `\nThe file appears to have been deleted before a result could be retrieved. Perhaps there is a conflicting script.` :
-                        `\nThe script was likely passed invalid arguments. Please post a screenshot of this error on discord.`),
-        maxRetries, retryDelayMs, undefined, verbose, verbose);
-    if (verbose) log(ns, `Read the following data for command ${command}:\n${fileData}`);
-    return JSON.parse(fileData); // Deserialize it back into an object/array and return
+async function getNsDataThroughFile(ns, func, filename, tempFilename, ...funcArgs) {
+    const strFuncArgs = JSON.stringify(funcArgs);
+    const cmd = `${func.toString()}(${strFuncArgs});`;
+    const hash = hashCode(cmd);
+    const tempFile = `${tempFilename}-${hash}.txt`;
+    if (ns.fileExists(tempFile)) {
+        const fileData = ns.read(tempFile);
+        return JSON.parse(fileData);
+    } else {
+        ns.write(filename, cmd, 'w');
+        ns.run(filename);
+        let success = false;
+        let tries = 0;
+        while (!success && tries < 3) {
+            if (ns.fileExists(tempFile)) {
+                success = true;
+                const fileData = ns.read(tempFile);
+                return JSON.parse(fileData);
+            }
+            tries++;
+        }
+        throw new Error(`Error getting data through file. Tried ${tries} times.`);
+    }
 }
 
 /** Evaluate an arbitrary ns command by writing it to a new script and then running or executing it.
