@@ -216,39 +216,33 @@ function getExports(ns) {
  * @param {string=} fileName - (default "/Temp/{commandhash}-data.txt") The name of the file to which data will be written to disk by a temporary process
  * @param {args=} args - args to be passed in as arguments to command being run as a new script.
  **/
-export async function runCommand_Custom(ns, fnRun, command, fileName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
-    checkNsInstance(ns, '"runCommand_Custom"');
-    if (!Array.isArray(args)) throw new Error(`args specified were a ${typeof args}, but an array is required.`);
-    if (!verbose) disableLogs(ns, ['sleep']);
-    // Auto-import any helpers that the temp script attempts to use
-    const required = getExports(ns).filter(e => command.includes(`${e}(`));
-    let script = (required.length > 0 ? `import { ${required.join(", ")} } from 'helpers.js'\n` : '') +
-        `export async function main(ns) { ${command} }`;
-    fileName = fileName || `/Temp/${hashCode(command)}-command.js`;
-    if (verbose)
-        log(ns, `INFO: Using a temporary script (${fileName}) to execute the command:` +
-            `\n  ${command}\nWith the following arguments:    ${JSON.stringify(args)}`);
-    // It's possible for the file to be deleted while we're trying to execute it, so even wrap writing the file in a retry
-    return await autoRetry(ns, async () => {
-        // To improve performance, don't re-write the temp script if it's already in place with the correct contents.
-        const oldContents = ns.read(fileName);
-        if (oldContents != script) {
-            if (oldContents) // Create some noise if temp scripts are being created with the same name but different contents
-                ns.tprint(`WARNING: Had to overwrite temp script ${fileName}\nOld Contents:\n${oldContents}\nNew Contents:\n${script}` +
-                    `\nThis warning is generated as part of an effort to switch over to using only 'immutable' temp scripts. ` +
-                    `Please paste a screenshot in Discord at https://discord.com/channels/415207508303544321/935667531111342200`);
-            await ns.write(fileName, script, "w");
-            // Wait for the script to appear and be readable (game can be finicky on actually completing the write)
-            await autoRetry(ns, () => ns.read(fileName), c => c == script, () => `Temporary script ${fileName} is not available, ` +
-                `despite having written it. (Did a competing process delete or overwrite it?)`, maxRetries, retryDelayMs, undefined, verbose, verbose);
+async function runCommand_Custom(ns, fnRun, command, fName, args, verbose, maxRetries, retryDelayMs) {
+    let lastError;
+    const startTime = Date.now();
+    for (let i = 1; i <= maxRetries; i++) {
+        try {
+            return await fnRun(fName, ...args);
+        } catch (e) {
+            lastError = e;
+            if (verbose) log(ns, `[ERROR] runCommand_Custom failed. Retrying (${i}/${maxRetries})...`, e);
+            if (e.toString().includes("ERR_NOT_ENOUGH_RAM")) {
+                await ns.sleep(retryDelayMs);
+                continue;
+            } else {
+                throw e;
+            }
         }
-        // Run the script, now that we're sure it is in place
-        return fnRun(fileName, 1 /* Always 1 thread */, ...args);
-    }, pid => pid !== 0,
-        () => `The temp script was not run (likely due to insufficient RAM).` +
-            `\n  Script:  ${fileName}\n  Args:    ${JSON.stringify(args)}\n  Command: ${command}` +
-            `\nThe script that ran this will likely recover and try again later once you have more free ram.`,
-        maxRetries, retryDelayMs, undefined, verbose, verbose);
+    }
+    const err = new Error(`[ERROR] runCommand_Custom: Too many retries. Last error: ${lastError}`);
+    err.lastError = lastError;
+    err.command = command;
+    err.fName = fName;
+    err.args = args;
+    err.verbose = verbose;
+    err.maxRetries = maxRetries;
+    err.retryDelayMs = retryDelayMs;
+    err.elapsedTimeMs = Date.now() - startTime;
+    throw err;
 }
 
 /**
