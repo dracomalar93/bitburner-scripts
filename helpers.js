@@ -155,8 +155,9 @@ export async function getNsDataThroughFile(ns, command, fName, args = [], verbos
  **/
 export async function getNsDataThroughFile_Custom(ns, fnRun, command, fName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
     if (typeof command !== 'string') {
-        throw new Error('Invalid command: command must be a string');
+        command = String(command);
     }
+    const result = getNsDataThroughFile_Custom(ns, fnRun, command, fName, args, verbose, maxRetries, retryDelayMs);
     checkNsInstance(ns, '"getNsDataThroughFile_Custom"');
     if (!verbose) disableLogs(ns, ['read']);
     const commandHash = hashCode(command);
