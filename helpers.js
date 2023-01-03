@@ -138,14 +138,6 @@ export function getFnIsAliveViaNsPs(ns) {
  * @param {bool=} verbose - (default false) If set to true, pid and result of command are logged.
  **/
 
-/**
- * An advanced version of getNsDataThroughFile that lets you pass your own "fnRun" implementation to reduce RAM requirements
- * Importing incurs no RAM (now that ns.read is free) plus whatever fnRun you provide it
- * Has the capacity to retry if there is a failure (e.g. due to lack of RAM available). Not recommended for performance-critical code.
- * @param {NS} ns - The nestcript instance passed to your script's main entry point
- * @param {function} fnRun - A single-argument function used to start the new sript, e.g. `ns.run` or `(f,...args) => ns.exec(f, "home", ...args)`
- * @param {args=} args - args to be passed in as arguments to command being run as a new script.
- **/
 export async function getNsDataThroughFile(ns, command, fName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
     checkNsInstance(ns, '"getNsDataThroughFile"');
     if (!verbose) disableLogs(ns, ['run', 'isRunning']);
@@ -162,6 +154,9 @@ export async function getNsDataThroughFile(ns, command, fName, args = [], verbos
  * @param {args=} args - args to be passed in as arguments to command being run as a new script.
  **/
 export async function getNsDataThroughFile_Custom(ns, fnRun, command, fName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
+    if (typeof command !== 'string') {
+        throw new Error('Invalid command: command must be a string');
+    }
     checkNsInstance(ns, '"getNsDataThroughFile_Custom"');
     if (!verbose) disableLogs(ns, ['read']);
     const commandHash = hashCode(command);
