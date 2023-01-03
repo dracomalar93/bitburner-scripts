@@ -1,560 +1,661 @@
-/**
- * Return a formatted representation of the monetary amount using scale symbols (e.g. $6.50M)
- * @param {number} num - The number to format
- * @param {number=} maxSignificantFigures - (default: 6) The maximum significant figures you wish to see (e.g. 123, 12.3 and 1.23 all have 3 significant figures)
- * @param {number=} maxDecimalPlaces - (default: 3) The maximum decimal places you wish to see, regardless of significant figures. (e.g. 12.3, 1.2, 0.1 all have 1 decimal)
- **/
-export function formatMoney(num, maxSignificantFigures = 6, maxDecimalPlaces = 3) {
-    let numberShort = formatNumberShort(num, maxSignificantFigures, maxDecimalPlaces);
-    return num >= 0 ? "$" + numberShort : numberShort.replace("-", "-$");
+import {
+	log, getFilePath, getConfiguration, instanceCount, getNsDataThroughFile, runCommand, waitForProcessToComplete,
+	getActiveSourceFiles, tryGetBitNodeMultipliers, getStocksValue, unEscapeArrayArgs,
+	formatMoney, formatDuration,
+} from './helpers.js'
+
+const persistentLog = "log.autopilot.txt";
+const factionManagerOutputFile = "/Temp/affordable-augs.txt"; // Temp file produced by faction manager with status information
+const casinoFlagFile = "/Temp/ran-casino.txt";
+const defaultBnOrder = [4.3, 1.3, 5.1, 9.2, 10.1, 2.1, 8.2, 10.3, 9.3, 11.3, 13.3, 5.3, 7.1, 6.3, 7.3, 2.3, 8.3, 3.3, 12.999];
+
+let options = null; // The options used at construction time
+const argsSchema = [ // The set of all command line arguments
+	['next-bn', 0], // If we destroy the current BN, the next BN to start
+	['disable-auto-destroy-bn', false], // Set to true if you do not want to auto destroy this BN when done
+	['install-at-aug-count', 11], // Automatically install when we can afford this many new augmentations (with NF only counting as 1)
+	['install-at-aug-plus-nf-count', 14], // or... automatically install when we can afford this many augmentations including additional levels of Neuroflux
+	['install-for-augs', ["The Red Pill"]], // or... automatically install as soon as we can afford one of these augmentations
+	['install-countdown', 5 * 60 * 1000], // If we're ready to install, wait this long first to see if more augs come online (we might just be gaining momentum)
+	['time-before-boosting-best-hack-server', 15 * 60 * 1000], // Wait this long before picking our best hack-income server and spending hashes on boosting it
+	['reduced-aug-requirement-per-hour', 0.5], // For every hour since the last reset, require this many fewer augs to install.
+	['interval', 2000], // Wake up this often (milliseconds) to check on things
+	['interval-check-scripts', 10000], // Get a listing of all running processes on home this frequently
+	['high-hack-threshold', 8000], // Once hack level reaches this, we start daemon in high-performance hacking mode
+	['enable-bladeburner', false], // Set to true to allow bladeburner progression (probably slows down BN completion)
+	['wait-for-4s-threshold', 0.9], // Set to 0 to not reset until we have 4S. If money is above this ratio of the 4S Tix API cost, don't reset until we buy it.
+	['disable-wait-for-4s', false], // If true, will doesn't wait for the 4S Tix API to be acquired under any circumstantes
+	['disable-rush-gangs', false], // Set to true to disable focusing work-for-faction on Karma until gangs are unlocked
+	['on-completion-script', null], // Spawn this script when we defeat the bitnode
+	['on-completion-script-args', []], // Optional args to pass to the script when we defeat the bitnode
+];
+export function autocomplete(data, args) {
+	data.flags(argsSchema);
+	const lastFlag = args.length > 1 ? args[args.length - 2] : null;
+	if (["--on-completion-script"].includes(lastFlag))
+		return data.scripts;
+	return [];
 }
 
-const symbols = ["", "k", "m", "b", "t", "q", "Q", "s", "S", "o", "n", "e33", "e36", "e39"];
+let playerInGang, rushGang; // Tells us whether we're should be trying to work towards getting into a gang
+let wdHack; // If the WD server is available (i.e. TRP is installed), caches the required hack level
+let ranCasino; // Flag to indicate whether we've stolen 10b from the casino yet
+let reservedPurchase; // Flag to indicate whether we've reservedPurchase money and can still afford augmentations
+let reserveForDaedalus, daedalusUnavailable; // Flags to indicate that we should be keeping 100b cash on hand to earn an invite to Daedalus
+let lastScriptsCheck; // Last time we got a listing of all running scripts
+let killScripts; // A list of scripts flagged to be restarted due to changes in priority
+let dictOwnedSourceFiles, unlockedSFs, bitnodeMults, nextBn; // Info for the current bitnode
+let installedAugmentations, playerInstalledAugCount, stanekLaunched; // Info for the current ascend
+let daemonStartTime; // The time we personally launched daemon.
+let installCountdown; // Start of a countdown before we install augmentations.
+let bnCompletionSuppressed; // Flag if we've detected that we've won the BN, but are suppressing a restart
 
-/**
- * Return a formatted representation of the monetary amount using scale sympols (e.g. 6.50M) 
- * @param {number} num - The number to format
- * @param {number=} maxSignificantFigures - (default: 6) The maximum significant figures you wish to see (e.g. 123, 12.3 and 1.23 all have 3 significant figures)
- * @param {number=} maxDecimalPlaces - (default: 3) The maximum decimal places you wish to see, regardless of significant figures. (e.g. 12.3, 1.2, 0.1 all have 1 decimal)
- **/
-export function formatNumberShort(num, maxSignificantFigures = 6, maxDecimalPlaces = 3) {
-    if (Math.abs(num) > 10 ** (3 * symbols.length)) // If we've exceeded our max symbol, switch to exponential notation
-        return num.toExponential(Math.min(maxDecimalPlaces, maxSignificantFigures - 1));
-    for (var i = 0, sign = Math.sign(num), num = Math.abs(num); num >= 1000 && i < symbols.length; i++) num /= 1000;
-    // TODO: A number like 9.999 once rounded to show 3 sig figs, will become 10.00, which is now 4 sig figs.
-    return ((sign < 0) ? "-" : "") + num.toFixed(Math.max(0, Math.min(maxDecimalPlaces, maxSignificantFigures - Math.floor(1 + Math.log10(num))))) + symbols[i];
-}
+/** @param {NS} ns **/
+export async function main(ns) {
+	const runOptions = getConfiguration(ns, argsSchema);
+	if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
+	options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
 
-/** Convert a shortened number back into a value */
-export function parseShortNumber(text = "0") {
-    let parsed = Number(text);
-    if (!isNaN(parsed)) return parsed;
-    for (const sym of symbols.slice(1))
-        if (text.toLowerCase().endsWith(sym))
-            return Number.parseFloat(text.slice(0, text.length - sym.length)) * Math.pow(10, 3 * symbols.indexOf(sym));
-    return Number.NaN;
-}
+	log(ns, "INFO: Auto-pilot engaged...", true, 'info');
+	// The game does not allow boolean flags to be turned "off" via command line, only on. Since this gets saved, notify the user about how they can turn it off.
+	const flagsSet = ['disable-auto-destroy-bn', 'enable-bladeburner', 'disable-wait-for-4s', 'disable-rush-gangs'].filter(f => options[f]);
+	for (const flag of flagsSet)
+		log(ns, `WARNING: You have previously enabled the flag "--${flag}". Because of the way this script saves its run settings, the ` +
+			`only way to now turn this back off will be to manually edit or delete the file ${ns.getScriptName()}.config.txt`, true);
 
-/**
- * Return a number formatted with the specified number of significatnt figures or decimal places, whichever is more limiting.
- * @param {number} num - The number to format
- * @param {number=} minSignificantFigures - (default: 6) The minimum significant figures you wish to see (e.g. 123, 12.3 and 1.23 all have 3 significant figures)
- * @param {number=} minDecimalPlaces - (default: 3) The minimum decimal places you wish to see, regardless of significant figures. (e.g. 12.3, 1.2, 0.1 all have 1 decimal)
- **/
-export function formatNumber(num, minSignificantFigures = 3, minDecimalPlaces = 1) {
-    return num == 0.0 ? num : num.toFixed(Math.max(minDecimalPlaces, Math.max(0, minSignificantFigures - Math.ceil(Math.log10(num)))));
-}
-
-/** Formats some RAM amount as a round number of GB with thousands separators e.g. `1,028 GB` */
-export function formatRam(num) { return `${Math.round(num).toLocaleString('en')} GB`; }
-
-/** Return a datatime in ISO format */
-export function formatDateTime(datetime) { return datetime.toISOString(); }
-
-/** Format a duration (in milliseconds) as e.g. '1h 21m 6s' for big durations or e.g '12.5s' / '23ms' for small durations */
-export function formatDuration(duration) {
-    if (duration < 1000) return `${duration.toFixed(0)}ms`
-    if (!isFinite(duration)) return 'forever (Infinity)'
-    const portions = [];
-    const msInHour = 1000 * 60 * 60;
-    const hours = Math.trunc(duration / msInHour);
-    if (hours > 0) {
-        portions.push(hours + 'h');
-        duration -= (hours * msInHour);
-    }
-    const msInMinute = 1000 * 60;
-    const minutes = Math.trunc(duration / msInMinute);
-    if (minutes > 0) {
-        portions.push(minutes + 'm');
-        duration -= (minutes * msInMinute);
-    }
-    let seconds = (duration / 1000.0)
-    // Include millisecond precision if we're on the order of seconds
-    seconds = (hours == 0 && minutes == 0) ? seconds.toPrecision(3) : seconds.toFixed(0);
-    if (seconds > 0) {
-        portions.push(seconds + 's');
-        duration -= (minutes * 1000);
-    }
-    return portions.join(' ');
-}
-
-/** Generate a hashCode for a string that is pretty unique most of the time */
-export function hashCode(s) {
-    if (typeof s !== 'string') {
-        return 0;
-    }
-
-    return s.split("").reduce(function (a, b) { a = ((a << 5) - a) + b.charCodeAt(0); return a & a }, 0);
+	let startUpRan = false;
+	while (true) {
+		try {
+			// Start-up actions, wrapped in error handling in case of temporary failures
+			if (!startUpRan) startUpRan = await startUp(ns);
+			// Main loop: Monitor progress in the current BN and automatically reset when we can afford TRP, or N augs.
+			await mainLoop(ns);
+		}
+		catch (err) {
+			log(ns, `WARNING: autopilot.js Caught (and suppressed) an unexpected error:\n` +
+				(typeof err === 'string' ? err : err.message || JSON.stringify(err)), false, 'warning');
+		}
+		await ns.sleep(options['interval']);
+	}
 }
 
 /** @param {NS} ns **/
-export function disableLogs(ns, listOfLogs) { ['disableLog'].concat(...listOfLogs).forEach(log => checkNsInstance(ns, '"disableLogs"').disableLog(log)); }
+async function startUp(ns) {
+	await persistConfigChanges(ns);
 
-/** Joins all arguments as components in a path, e.g. pathJoin("foo", "bar", "/baz") = "foo/bar/baz" **/
-export function pathJoin(...args) {
-    return args.filter(s => !!s).join('/').replace(/\/\/+/g, '/');
+	// Reset global state
+	playerInGang = rushGang = ranCasino = reserveForDaedalus = daedalusUnavailable =
+		bnCompletionSuppressed = stanekLaunched = false;
+	playerInstalledAugCount = wdHack = null;
+	installCountdown = daemonStartTime = lastScriptsCheck = reservedPurchase = 0;
+	lastStatusLog = "";
+	installedAugmentations = killScripts = [];
+
+	// Collect and cache some one-time data
+	const player = await getNsDataThroughFile(ns, 'ns.getPlayer()', '/Temp/getPlayer.txt');
+	bitnodeMults = await tryGetBitNodeMultipliers(ns);
+	dictOwnedSourceFiles = await getActiveSourceFiles(ns, false);
+	unlockedSFs = await getActiveSourceFiles(ns, true);
+	try {
+		installedAugmentations = !(4 in unlockedSFs) ? [] :
+			await getNsDataThroughFile(ns, 'ns.singularity.getOwnedAugmentations()', '/Temp/player-augs-installed.txt');
+		if (!(4 in unlockedSFs))
+			log(ns, `WARNING: This script requires SF4 (singularity) functions to assess purchasable augmentations ascend automatically. ` +
+				`Some functionality will be disabled and you'll have to manage working for factions, purchasing, and installing augmentations yourself.`, true);
+	} catch (err) {
+		if (unlockedSFs[4] || 0 == 3) throw err; // No idea why this failed, treat as temporary and allow auto-retry.		
+		log(ns, `WARNING: You only have SF4 level ${unlockedSFs[4]}. Without level 3, some singularity functions will be ` +
+			`too expensive to run until you have bought a lot of home RAM.`, true);
+	}
+	if (player.playtimeSinceLastBitnode < 60 * 1000) // Skip initialization if we've been in the bitnode for more than 1 minute
+		await initializeNewBitnode(ns, player);
+
+	// Decide what the next-up bitnode should be
+	const getSFLevel = bn => Number(bn + "." + ((dictOwnedSourceFiles[bn] || 0) + (player.bitNodeN == bn ? 1 : 0)));
+	const nextSfEarned = getSFLevel(player.bitNodeN);
+	const nextRecommendedSf = defaultBnOrder.find(v => v - Math.floor(v) > getSFLevel(Math.floor(v)) - Math.floor(v));
+	const nextRecommendedBn = Math.floor(nextRecommendedSf);
+	nextBn = options['next-bn'] || nextRecommendedBn;
+	log(ns, `INFO: After the current BN (${nextSfEarned}), the next recommended BN is ${nextRecommendedBn} until you have SF ${nextRecommendedSf}.` +
+		`\nYou are currently earning SF${nextSfEarned}, and you already own the following source files: ` +
+		Object.keys(dictOwnedSourceFiles).map(bn => `${bn}.${dictOwnedSourceFiles[bn]}`).join(", "));
+	if (nextBn != nextRecommendedBn)
+		log(ns, `WARN: The next recommended BN is ${nextRecommendedBn}, but the --next-bn parameter is set to override this with ${nextBn}.`, true, 'warning');
+
+	return true;
 }
 
-/** Gets the path for the given local file, taking into account optional subfolder relocation via git-pull.js **/
-export function getFilePath(file) {
-    const subfolder = '';  // git-pull.js optionally modifies this when downloading
-    return pathJoin(subfolder, file);
+/** Write any configuration changes to disk so that they will survive resets and new bitnodes
+ * @param {NS} ns **/
+async function persistConfigChanges(ns) {
+	// Because we cannot pass args to "install" and "destroy" functions, we write them to disk to override defaults
+	const changedArgs = JSON.stringify(argsSchema
+		.filter(a => JSON.stringify(options[a[0]]) != JSON.stringify(a[1]))
+		.map(a => [a[0], options[a[0]]]));
+	// Only update the config file if it doesn't match the most resent set of run args
+	const configPath = `${ns.getScriptName()}.config.txt`
+	const currentConfig = ns.read(configPath);
+	if ((changedArgs.length > 2 || currentConfig) && changedArgs != currentConfig) {
+		await ns.write(configPath, changedArgs, "w");
+		log(ns, `INFO: Updated "${configPath}" to persist the most recent run args through resets: ${changedArgs}`, true, 'info');
+	}
 }
 
-// FUNCTIONS THAT PROVIDE ALTERNATIVE IMPLEMENTATIONS TO EXPENSIVE NS FUNCTIONS
-// VARIATIONS ON NS.RUN
-
-/** @param {NS} ns
- *  Use where a function is required to run a script and you have already referenced ns.run in your script **/
-export function getFnRunViaNsRun(ns) { return checkNsInstance(ns, '"getFnRunViaNsRun"').run; }
-
-/** @param {NS} ns
- *  Use where a function is required to run a script and you have already referenced ns.exec in your script **/
-export function getFnRunViaNsExec(ns, host = "home") {
-    checkNsInstance(ns, '"getFnRunViaNsExec"');
-    return function (scriptPath, ...args) { return ns.exec(scriptPath, host, ...args); }
-}
-// VARIATIONS ON NS.ISRUNNING
-
-/** @param {NS} ns
- *  Use where a function is required to run a script and you have already referenced ns.run in your script  */
-export function getFnIsAliveViaNsIsRunning(ns) { return checkNsInstance(ns, '"getFnIsAliveViaNsIsRunning"').isRunning; }
-
-/** @param {NS} ns
- *  Use where a function is required to run a script and you have already referenced ns.ps in your script  */
-export function getFnIsAliveViaNsPs(ns) {
-    checkNsInstance(ns, '"getFnIsAliveViaNsPs"');
-    return function (pid, host) { return ns.ps(host).some(process => process.pid === pid); }
-}
-
-/**
- * Retrieve the result of an ns command by executing it in a temporary .js script, writing the result to a file, then shuting it down
- * Importing incurs a maximum of 1.1 GB RAM (0 GB for ns.read, 1 GB for ns.run, 0.1 GB for ns.isRunning).
- * Has the capacity to retry if there is a failure (e.g. due to lack of RAM available). Not recommended for performance-critical code.
- * @param {NS} ns - The nestcript instance passed to your script's main entry point
- * @param {string} command - The ns command that should be invoked to get the desired data (e.g. "ns.getServer('home')" )
- * @param {string=} fName - (default "/Temp/{commandhash}-data.txt") The name of the file to which data will be written to disk by a temporary process
- * @param {args=} args - args to be passed in as arguments to command being run as a new script.
- * @param {bool=} verbose - (default false) If set to true, pid and result of command are logged.
- **/
-
-export async function getNsDataThroughFile(ns, command, fName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
-    checkNsInstance(ns, '"getNsDataThroughFile"');
-    if (!verbose) disableLogs(ns, ['run', 'isRunning']);
-    const run = ns.run.bind(ns);
-    return await getNsDataThroughFile_Custom(ns, run, command, fName, args, verbose, maxRetries, retryDelayMs);
-}
-
-/**
- * An advanced version of getNsDataThroughFile that lets you pass your own "fnRun" implementation to reduce RAM requirements
- * Importing incurs no RAM (now that ns.read is free) plus whatever fnRun you provide it
- * Has the capacity to retry if there is a failure (e.g. due to lack of RAM available). Not recommended for performance-critical code.
- * @param {NS} ns - The nestcript instance passed to your script's main entry point
- * @param {function} fnRun - A single-argument function used to start the new sript, e.g. `ns.run` or `(f,...args) => ns.exec(f, "home", ...args)`
- * @param {args=} args - args to be passed in as arguments to command being run as a new script.
- **/
-export async function getNsDataThroughFile_Custom(ns, fnRun, command, fName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
-    if (typeof command !== 'string') {
-        command = String(command);
-    }
-    const result = getNsDataThroughFile_Custom(ns, fnRun, command, fName, args, verbose, maxRetries, retryDelayMs);
-    checkNsInstance(ns, '"getNsDataThroughFile_Custom"');
-    if (!verbose) disableLogs(ns, ['read']);
-    const commandHash = hashCode(command);
-    fName = fName || `/Temp/${commandHash}-data.txt`;
-    const fNameCommand = (fName || `/Temp/${commandHash}-command`) + '.js'
-    // Pre-write contents to the file that will allow us to detect if our temp script never got run
-    const initialContents = "<Insufficient RAM>";
-    await ns.write(fName, initialContents, 'w');
-    // Prepare a command that will write out a new file containing the results of the command
-    // unless it already exists with the same contents (saves time/ram to check first)
-    // If an error occurs, it will write an empty file to avoid old results being misread.
-    const commandToFile = `let r;try{r=JSON.stringify(\n` +
-        `    ${command}\n` +
-        `);}catch(e){r="ERROR: "+(typeof e=='string'?e:e.message||JSON.stringify(e));}\n` +
-        `const f="${fName}"; if(ns.read(f)!==r) await ns.write(f,r,'w')`;
-    // Run the command with auto-retries if it fails
-    const pid = await runCommand_Custom(ns, fnRun, commandToFile, fNameCommand, args, verbose, maxRetries, retryDelayMs, Number(threads));
-    // Wait for the process to complete. Note, as long as the above returned a pid, we don't actually have to check it, just the file contents
-    const fnIsAlive = (ignored_pid) => ns.read(fName) === initialContents;
-    await waitForProcessToComplete_Custom(ns, fnIsAlive, pid, verbose);
-    if (verbose) log(ns, `Process ${pid} is done. Reading the contents of ${fName}...`);
-    // Read the file, with auto-retries if it fails // TODO: Unsure reading a file can fail or needs retrying. 
-    let lastRead;
-    const fileData = await autoRetry(ns, () => ns.read(fName),
-        f => (lastRead = f) !== undefined && f !== "" && f !== initialContents && !(typeof f == "string" && f.startsWith("ERROR: ")),
-        () => `\nns.read('${fName}') returned a bad result: "${lastRead}".` +
-            `\n  Script:  ${fNameCommand}\n  Args:    ${JSON.stringify(args)}\n  Command: ${command}` +
-            (lastRead == undefined ? '\nThe developer has no idea how this could have happened. Please post a screenshot of this error on discord.' :
-                lastRead == initialContents ? `\nThe script that ran this will likely recover and try again later once you have more free ram.` :
-                    lastRead == "" ? `\nThe file appears to have been deleted before a result could be retrieved. Perhaps there is a conflicting script.` :
-                        `\nThe script was likely passed invalid arguments. Please post a screenshot of this error on discord.`),
-        maxRetries, retryDelayMs, undefined, verbose, verbose);
-    if (verbose) log(ns, `Read the following data for command ${command}:\n${fileData}`);
-    return JSON.parse(fileData); // Deserialize it back into an object/array and return
-}
-
-/** Evaluate an arbitrary ns command by writing it to a new script and then running or executing it.
- * @param {NS} ns - The nestcript instance passed to your script's main entry point
- * @param {string} command - The ns command that should be invoked to get the desired data (e.g. "ns.getServer('home')" )
- * @param {string=} fileName - (default "/Temp/{commandhash}-data.txt") The name of the file to which data will be written to disk by a temporary process
- * @param {args=} args - args to be passed in as arguments to command being run as a new script.
- * @param {bool=} verbose - (default false) If set to true, the evaluation result of the command is printed to the terminal
- */
-export async function runCommand(ns, command, fileName, args = [], verbose = false, maxRetries = 5, retryDelayMs = 50) {
-    checkNsInstance(ns, '"runCommand"');
-    if (!verbose) disableLogs(ns, ['run']);
-    const run = ns.run.bind(ns); // V2.2 Update
-    return await runCommand_Custom(ns, run, command, fileName, args, verbose, maxRetries, retryDelayMs, Number(threads));
-}
-
-const _cachedExports = [];
-/** @param {NS} ns - The nestcript instance passed to your script's main entry point
- * @returns {string[]} The set of all funciton names exported by this file. */
-function getExports(ns) {
-    if (_cachedExports.length > 0) return _cachedExports;
-    const scriptHelpersRows = ns.read(getFilePath('helpers.js')).split("\n");
-    for (const row of scriptHelpersRows) {
-        if (!row.startsWith("export")) continue;
-        const funcNameStart = row.indexOf("function") + "function".length + 1;
-        const funcNameEnd = row.indexOf("(", funcNameStart);
-        _cachedExports.push(row.substring(funcNameStart, funcNameEnd));
-    }
-    return _cachedExports;
-}
-
-/**
- * An advanced version of runCommand that lets you pass your own "isAlive" test to reduce RAM requirements (e.g. to avoid referencing ns.isRunning)
- * Importing incurs 0 GB RAM (assuming fnRun, fnWrite are implemented using another ns function you already reference elsewhere like ns.exec)
- * @param {NS} ns - The nestcript instance passed to your script's main entry point
- * @param {function} fnRun - A single-argument function used to start the new sript, e.g. `ns.run` or `(f,...args) => ns.exec(f, "home", ...args)`
- * @param {string} command - The ns command that should be invoked to get the desired data (e.g. "ns.getServer('home')" )
- * @param {string=} fileName - (default "/Temp/{commandhash}-data.txt") The name of the file to which data will be written to disk by a temporary process
- * @param {args=} args - args to be passed in as arguments to command being run as a new script.
- **/
-async function runCommand_Custom(ns, fnRun, command, fName, args, verbose, maxRetries, retryDelayMs, Number) {
-    let lastError;
-    const startTime = Date.now();
-    for (let i = 1; i <= maxRetries; i++) {
-        try {
-            return await fnRun(fName, ...args);
-        } catch (e) {
-            lastError = e;
-            if (verbose) log(ns, `[ERROR] runCommand_Custom failed. Retrying (${i}/${maxRetries})...`, e);
-            if (e.toString().includes("ERR_NOT_ENOUGH_RAM")) {
-                await ns.sleep(retryDelayMs);
-                continue;
-            } else {
-                throw e;
-            }
-        }
-    }
-    const err = new Error(`[ERROR] runCommand_Custom: Too many retries. Last error: ${lastError}`);
-    err.lastError = lastError;
-    err.command = command;
-    err.fName = fName;
-    err.args = args;
-    err.verbose = verbose;
-    err.maxRetries = maxRetries;
-    err.retryDelayMs = retryDelayMs;
-    err.elapsedTimeMs = Date.now() - startTime;
-    throw err;
-}
-
-/**
- * Wait for a process id to complete running
- * Importing incurs a maximum of 0.1 GB RAM (for ns.isRunning) 
- * @param {NS} ns - The nestcript instance passed to your script's main entry point
- * @param {int} pid - The process id to monitor
- * @param {bool=} verbose - (default false) If set to true, pid and result of command are logged.
- **/
-export async function waitForProcessToComplete(ns, pid, verbose) {
-    checkNsInstance(ns, '"waitForProcessToComplete"');
-    if (!verbose) disableLogs(ns, ['isRunning']);
-    const isRunning = ns.isRunning.bind(ns); // V2.2 Update
-    return await waitForProcessToComplete_Custom(ns, isRunning, pid, verbose);
-}
-/**
- * An advanced version of waitForProcessToComplete that lets you pass your own "isAlive" test to reduce RAM requirements (e.g. to avoid referencing ns.isRunning)
- * Importing incurs 0 GB RAM (assuming fnIsAlive is implemented using another ns function you already reference elsewhere like ns.ps) 
- * @param {NS} ns - The nestcript instance passed to your script's main entry point
- * @param {(pid: number) => Promise<boolean>} fnIsAlive - A single-argument function used to start the new sript, e.g. `ns.isRunning` or `pid => ns.ps("home").some(process => process.pid === pid)`
- **/
-export async function waitForProcessToComplete_Custom(ns, fnIsAlive, pid, verbose) {
-    checkNsInstance(ns, '"waitForProcessToComplete_Custom"');
-    if (!verbose) disableLogs(ns, ['sleep']);
-    // Wait for the PID to stop running (cheaper than e.g. deleting (rm) a possibly pre-existing file and waiting for it to be recreated)
-    let start = Date.now();
-    let sleepMs = 1;
-    let done = false;
-    for (var retries = 0; retries < 1000; retries++) {
-        if (!(await fnIsAlive(pid))) {
-            done = true;
-            break; // Script is done running
-        }
-        if (verbose && retries % 100 === 0) ns.print(`Waiting for pid ${pid} to complete... (${formatDuration(Date.now() - start)})`);
-        await ns.sleep(sleepMs);
-        sleepMs = Math.min(sleepMs * 2, 200);
-    }
-    // Make sure that the process has shut down and we haven't just stopped retrying
-    if (!done) {
-        let errorMessage = `run-command pid ${pid} is running much longer than expected. Max retries exceeded.`;
-        ns.print(errorMessage);
-        throw new Error(errorMessage);
-    }
-}
-
-/** If the argument is an Error instance, returns it as is, otherwise, returns a new Error instance. */
-function asError(error) {
-    return error instanceof Error ? error : new Error(typeof error === 'string' ? error : JSON.stringify(error));
-}
-
-/** Helper to retry something that failed temporarily (can happen when e.g. we temporarily don't have enough RAM to run)
- * @param {NS} ns - The nestcript instance passed to your script's main entry point */
-export async function autoRetry(ns, fnFunctionThatMayFail, fnSuccessCondition, errorContext = "Success condition not met",
-    maxRetries = 5, initialRetryDelayMs = 50, backoffRate = 3, verbose = false, tprintFatalErrors = true) {
-    checkNsInstance(ns, '"autoRetry"');
-    let retryDelayMs = initialRetryDelayMs, attempts = 0;
-    while (attempts++ <= maxRetries) {
-        try {
-            const result = await fnFunctionThatMayFail()
-            const error = typeof errorContext === 'string' ? errorContext : errorContext();
-            if (!fnSuccessCondition(result))
-                throw asError(error);
-            return result;
-        }
-        catch (error) {
-            const fatal = attempts >= maxRetries;
-            log(ns, `${fatal ? 'FAIL' : 'INFO'}: Attempt ${attempts} of ${maxRetries} failed` +
-                (fatal ? `: ${typeof error === 'string' ? error : error.message || JSON.stringify(error)}` : `. Trying again in ${retryDelayMs}ms...`),
-                tprintFatalErrors && fatal, !verbose ? undefined : (fatal ? 'error' : 'info'))
-            if (fatal) throw asError(error);
-            await ns.sleep(retryDelayMs);
-            retryDelayMs *= backoffRate;
-        }
-    }
-}
-
-/** Helper to log a message, and optionally also tprint it and toast it
- * @param {NS} ns - The nestcript instance passed to your script's main entry point */
-export function log(ns, message = "", alsoPrintToTerminal = false, toastStyle = "", maxToastLength = Number.MAX_SAFE_INTEGER) {
-    checkNsInstance(ns, '"log"');
-    ns.print(message);
-    if (toastStyle) ns.toast(message.length <= maxToastLength ? message : message.substring(0, maxToastLength - 3) + "...", toastStyle);
-    if (alsoPrintToTerminal) {
-        ns.tprint(message);
-        // TODO: Find a way write things logged to the terminal to a "permanent" terminal log file, preferably without this becoming an async function.
-        //       Perhaps we copy logs to a port so that a separate script can optionally pop and append them to a file.
-        //ns.write("log.terminal.txt", message + '\n', 'a'); // Note: we should get away with not awaiting this promise since it's not a script file
-    }
-    return message;
-}
-
-/** Helper to get a list of all hostnames on the network
- * @param {NS} ns - The nestcript instance passed to your script's main entry point */
-export function scanAllServers(ns) {
-    checkNsInstance(ns, '"scanAllServers"');
-    let discoveredHosts = []; // Hosts (a.k.a. servers) we have scanned
-    let hostsToScan = ["home"]; // Hosts we know about, but have no yet scanned
-    let infiniteLoopProtection = 9999; // In case you mess with this code, this should save you from getting stuck
-    while (hostsToScan.length > 0 && infiniteLoopProtection-- > 0) { // Loop until the list of hosts to scan is empty
-        let hostName = hostsToScan.pop(); // Get the next host to be scanned
-        discoveredHosts.push(hostName); // Mark this host as "scanned"
-        for (const connectedHost of ns.scan(hostName)) // "scan" (list all hosts connected to this one)
-            if (!discoveredHosts.includes(connectedHost) && !hostsToScan.includes(connectedHost)) // If we haven't found this host
-                hostsToScan.push(connectedHost); // Add it to the queue of hosts to be scanned
-    }
-    return discoveredHosts; // The list of scanned hosts should now be the set of all hosts in the game!
-}
-
-/** @param {NS} ns 
- * Get a dictionary of active source files, taking into account the current active bitnode as well (optionally disabled). **/
-export async function getActiveSourceFiles(ns, includeLevelsFromCurrentBitnode = true) {
-    return await getActiveSourceFiles_Custom(ns, getNsDataThroughFile, includeLevelsFromCurrentBitnode);
-}
-
-/** @param {NS} ns 
- * @param {(ns: NS, command: string, fName?: string, args?: any, verbose?: any, maxRetries?: number, retryDelayMs?: number) => Promise<any>} fnGetNsDataThroughFile
- * getActiveSourceFiles Helper that allows the user to pass in their chosen implementation of getNsDataThroughFile to minimize RAM usage **/
-export async function getActiveSourceFiles_Custom(ns, fnGetNsDataThroughFile, includeLevelsFromCurrentBitnode = true) {
-    checkNsInstance(ns, '"getActiveSourceFiles"');
-    // Find out what source files the user has unlocked
-    let dictSourceFiles;
-    try {
-        dictSourceFiles = await fnGetNsDataThroughFile(ns,
-            `Object.fromEntries(ns.singularity.getOwnedSourceFiles().map(sf => [sf.n, sf.lvl]))`,
-            '/Temp/owned-source-files.txt');
-    } catch { dictSourceFiles = {}; } // If this fails (e.g. low RAM), return an empty dictionary
-    // If the user is currently in a given bitnode, they will have its features unlocked
-    if (includeLevelsFromCurrentBitnode) {
-        try {
-            const bitNodeN = (await fnGetNsDataThroughFile(ns, 'ns.getPlayer()', '/Temp/player-info.txt')).bitNodeN;
-            dictSourceFiles[bitNodeN] = Math.max(3, dictSourceFiles[bitNodeN] || 0);
-        } catch { /* We are expected to be fault-tolerant in low-ram conditions */ }
-    }
-    return dictSourceFiles;
-}
-
-/** @param {NS} ns 
- * Return bitnode multiplers, or null if they cannot be accessed. **/
-export async function tryGetBitNodeMultipliers(ns) {
-    return await tryGetBitNodeMultipliers_Custom(ns, getNsDataThroughFile);
-}
-
-/** @param {NS} ns
- * tryGetBitNodeMultipliers Helper that allows the user to pass in their chosen implementation of getNsDataThroughFile to minimize RAM usage **/
-export async function tryGetBitNodeMultipliers_Custom(ns, fnGetNsDataThroughFile) {
-    checkNsInstance(ns, '"tryGetBitNodeMultipliers"');
-    let canGetBitNodeMultipliers = false;
-    try { canGetBitNodeMultipliers = 5 in (await getActiveSourceFiles_Custom(ns, fnGetNsDataThroughFile)); } catch { }
-    if (!canGetBitNodeMultipliers) return null;
-    try { return await fnGetNsDataThroughFile(ns, 'ns.getBitNodeMultipliers()', '/Temp/bitnode-multipliers.txt'); } catch { }
-    return null;
-}
-
-/** @param {NS} ns 
- * Returns the number of instances of the current script running on the specified host. **/
-export async function instanceCount(ns, onHost = "home", warn = true, tailOtherInstances = true) {
-    checkNsInstance(ns, '"alreadyRunning"');
-    const scriptName = ns.getScriptName();
-    const others = await getNsDataThroughFile(ns, 'ns.ps(ns.args[0]).filter(p => p.filename == ns.args[1]).map(p => p.pid)',
-        '/Temp/ps-other-instances.txt', [onHost, scriptName]);
-    if (others.length >= 2) {
-        if (warn)
-            log(ns, `WARNING: You cannot start multiple versions of this script (${scriptName}). Please shut down the other instance first.` +
-                (tailOtherInstances ? ' (To help with this, a tail window for the other instance will be opened)' : ''), true, 'warning');
-        if (tailOtherInstances) // Tail all but the last pid, since it will belong to the current instance (which will be shut down)
-            others.slice(0, others.length - 1).forEach(pid => ns.tail(pid));
-    }
-    return others.length;
-}
-
-let cachedStockSymbols = null; // Cache of stock symbols since these never change
-
-/** Helper function to get all stock symbols, or null if you do not have TIX api access.
- * Caches symbols the first time they are successfully requested, since symbols never change.
+/** Logic run once at the beginning of a new BN
  * @param {NS} ns */
-export async function getStockSymbols(ns) {
-    cachedStockSymbols ??= await getNsDataThroughFile(ns,
-        `(() => { try { return ns.stock.getSymbols(); } catch { return null; } })()`,
-        '/Temp/stock-symbols.txt');
-    return cachedStockSymbols;
+async function initializeNewBitnode(ns, player) {
+	// Nothing to do here (yet)
 }
 
-/** Helper function to get the total value of stocks using as little RAM as possible.
+/** Logic run periodically throughout the BN
  * @param {NS} ns */
-export async function getStocksValue(ns) {
-    let stockSymbols = await getStockSymbols(ns);
-    if (stockSymbols == null) return 0; // No TIX API Access
-    const helper = async (fn) => await getNsDataThroughFile(ns,
-        `Object.fromEntries(ns.args.map(sym => [sym, ns.stock.${fn}(sym)]))`, `/Temp/stock-${fn}.txt`, stockSymbols);
-    const askPrices = await helper('getAskPrice');
-    const bidPrices = await helper('getBidPrice');
-    const positions = await helper('getPosition');
-    return stockSymbols.map(sym => ({ sym, pos: positions[sym], ask: askPrices[sym], bid: bidPrices[sym] }))
-        .reduce((total, stk) => total + (stk.pos[0] * stk.bid) /* Long Value */ + stk.pos[2] * (stk.pos[3] * 2 - stk.ask) /* Short Value */
-            // Subtract commission only if we have one or more shares (this is money we won't get when we sell our position)
-            // If for some crazy reason we have shares both in the short and long position, we'll have to pay the commission twice (two separate sales)
-            - 100000 * (Math.sign(stk.pos[0]) + Math.sign(stk.pos[2])), 0);
+async function mainLoop(ns) {
+	const player = await getNsDataThroughFile(ns, 'ns.getPlayer()', '/Temp/getPlayer.txt');
+	let stocksValue = 0;
+	try { stocksValue = await getStocksValue(ns); } catch { /* Assume if this fails (insufficient ram) we also have no stocks */ }
+	await manageReservedMoney(ns, player, stocksValue);
+	await checkOnDaedalusStatus(ns, player, stocksValue);
+	await checkIfBnIsComplete(ns, player);
+	await checkOnRunningScripts(ns, player);
+	await maybeDoCasino(ns, player);
+	await maybeInstallAugmentations(ns, player);
 }
 
-/** @param {NS} ns 
- * Returns a helpful error message if we forgot to pass the ns instance to a function */
-export function checkNsInstance(ns, fnName = "this function") {
-    if (!ns.print) throw new Error(`The first argument to ${fnName} should be a 'ns' instance.`);
-    return ns;
-}
-
-/** A helper to parse the command line arguments with a bunch of extra features, such as
- * - Loading a persistent defaults override from a local config file named after the script.
- * - Rendering "--help" output without all scripts having to explicitly specify it
+/** Logic run periodically to if there is anything we can do to speed along earning a Daedalus invite
  * @param {NS} ns
- * @param {[string, string | number | boolean | string[]][]} argsSchema - Specification of possible command line args. **/
-export function getConfiguration(ns, argsSchema) {
-    checkNsInstance(ns, '"getConfig"');
-    const scriptName = ns.getScriptName();
-    // If the user has a local config file, override the defaults in the argsSchema
-    const confName = `${scriptName}.config.txt`;
-    const overrides = ns.read(confName);
-    const overriddenSchema = overrides ? [...argsSchema] : argsSchema; // Clone the original args schema    
-    if (overrides) {
-        try {
-            let parsedOverrides = JSON.parse(overrides); // Expect a parsable dict or array of 2-element arrays like args schema
-            if (Array.isArray(parsedOverrides)) parsedOverrides = Object.fromEntries(parsedOverrides);
-            log(ns, `INFO: Applying ${Object.keys(parsedOverrides).length} overriding default arguments from "${confName}"...`);
-            for (const key in parsedOverrides) {
-                const override = parsedOverrides[key];
-                const matchIndex = overriddenSchema.findIndex(o => o[0] == key);
-                const match = matchIndex === -1 ? null : overriddenSchema[matchIndex];
-                if (!match)
-                    throw new Error(`Unrecognized key "${key}" does not match of this script's options: ` + JSON.stringify(argsSchema.map(a => a[0])));
-                else if (override === undefined)
-                    throw new Error(`The key "${key}" appeared in the config with no value. Some value must be provided. Try null?`);
-                else if (match && JSON.stringify(match[1]) != JSON.stringify(override)) {
-                    if (typeof (match[1]) !== typeof (override))
-                        log(ns, `WARNING: The "${confName}" overriding "${key}" value: ${JSON.stringify(override)} has a different type (${typeof override}) than the ` +
-                            `current default value ${JSON.stringify(match[1])} (${typeof match[1]}). The resulting behaviour may be unpredictable.`, false, 'warning');
-                    else
-                        log(ns, `INFO: Overriding "${key}" value: ${JSON.stringify(match[1])}  ->  ${JSON.stringify(override)}`);
-                    overriddenSchema[matchIndex] = { ...match }; // Clone the (previously shallow-copied) object at this position of the new argsSchema
-                    overriddenSchema[matchIndex][1] = override; // Update the value of the clone.
-                }
-            }
-        } catch (err) {
-            log(ns, `ERROR: There's something wrong with your config file "${confName}", it cannot be loaded.` +
-                `\nThe error encountered was: ${(typeof err === 'string' ? err : err.message || JSON.stringify(err))}` +
-                `\nYour config file should either be a dictionary e.g.: { "string-opt": "value", "num-opt": 123, "array-opt": ["one", "two"] }` +
-                `\nor an array of dict entries (2-element arrays) e.g.: [ ["string-opt", "value"], ["num-opt", 123], ["array-opt", ["one", "two"]] ]` +
-                `\n"${confName}" contains:\n${overrides}`, true, 'error', 80);
-            return null;
-        }
-    }
-    // Return the result of using the in-game args parser to combine the defaults with the command line args provided
-    try {
-        const finalOptions = ns.flags(overriddenSchema);
-        log(ns, `INFO: Running ${scriptName} with the following settings:` + Object.keys(finalOptions).filter(a => a != "_").map(a =>
-            `\n  ${a.length == 1 ? "-" : "--"}${a} = ${finalOptions[a] === null ? "null" : JSON.stringify(finalOptions[a])}`).join("") +
-            `\nrun ${scriptName} --help  to get more information about these options.`)
-        return finalOptions;
-    } catch (err) { // Detect if the user passed invalid arguments, and return help text
-        const error = ns.args.includes("help") || ns.args.includes("--help") ? null : // Detect if the user explictly asked for help and suppress the error
-            (typeof err === 'string' ? err : err.message || JSON.stringify(err));
-        // Try to parse documentation about each argument from the source code's comments
-        const source = ns.read(scriptName).split("\n");
-        let argsRow = 1 + source.findIndex(row => row.includes("argsSchema ="));
-        const optionDescriptions = {}
-        while (argsRow && argsRow < source.length) {
-            const nextArgRow = source[argsRow++].trim();
-            if (nextArgRow.length == 0) continue;
-            if (nextArgRow[0] == "]" || nextArgRow.includes(";")) break; // We've reached the end of the args schema
-            const commentSplit = nextArgRow.split("//").map(e => e.trim());
-            if (commentSplit.length != 2) continue; // This row doesn't appear to be in the format: [option...], // Comment
-            const optionSplit = commentSplit[0].split("'"); // Expect something like: ['name', someDefault]. All we need is the name
-            if (optionSplit.length < 2) continue;
-            optionDescriptions[optionSplit[1]] = commentSplit[1];
-        }
-        log(ns, (error ? `ERROR: There was an error parsing the script arguments provided: ${error}\n` : 'INFO: ') +
-            `${scriptName} possible arguments:` + argsSchema.map(a => `\n  ${a[0].length == 1 ? " -" : "--"}${a[0].padEnd(30)} ` +
-                `Default: ${(a[1] === null ? "null" : JSON.stringify(a[1])).padEnd(10)}` +
-                (a[0] in optionDescriptions ? ` // ${optionDescriptions[a[0]]}` : '')).join("") + '\n' +
-            `\nTip: All argument names, and some values support auto-complete. Hit the <tab> key to autocomplete or see possible options.` +
-            `\nTip: Array arguments are populated by specifying the argument multiple times, e.g.:` +
-            `\n       run ${scriptName} --arrayArg first --arrayArg second --arrayArg third  to run the script with arrayArg=[first, second, third]` +
-            (!overrides ? `\nTip: You can override the default values by creating a config file named "${confName}" containing e.g.: { "arg-name": "preferredValue" }`
-                : overrides && !error ? `\nNote: The default values are being modified by overrides in your local "${confName}":\n${overrides}`
-                    : `\nThis error may have been caused by your local overriding "${confName}" (especially if you changed the types of any options):\n${overrides}`), true);
-        return null; // Caller should handle null and shut down elegantly.
-    }
+ * @param {Player} player **/
+async function checkOnDaedalusStatus(ns, player, stocksValue) {
+	// Logic below is for rushing a daedalus invite.
+	// We do not need to run if we've previously determined that Daedalus cannot be unlocked (insufficient augs), or if we've already got TRP
+	if (daedalusUnavailable || (wdHack || 0) > 0) return reserveForDaedalus = false;
+	if (player.skills.hacking < 2500) return reserveForDaedalus = false;
+	if (player.factions.includes("Daedalus")) {
+		if (reserveForDaedalus) {
+			log(ns, "SUCCESS: We sped along joining the faction 'Daedalus'. Restarting work-for-factions.js to speed along earn rep.", false, 'success');
+			killScripts.push("work-for-factions.js"); // Schedule this to be killed (will be restarted) on the next script loop.
+			lastScriptsCheck = 0;
+		}
+		return reserveForDaedalus = false;
+	}
+	if (reserveForDaedalus) { // Already waiting for a Daedalus invite, try joining them
+		return (4 in unlockedSFs) ? await getNsDataThroughFile(ns, 'ns.singularity.joinFaction(ns.args[0])', '/Temp/joinFaction.txt', ["Daedalus"]) :
+			log(ns, "INFO: Please manually join the faction 'Daedalus' as soon as possible to proceed", false, 'info');
+	}
+	const bitNodeMults = await tryGetBitNodeMultipliers(ns, false) || { DaedalusAugsRequirement: 1 };
+	// Note: A change coming soon will convert DaedalusAugsRequirement from a fractional multiplier, to an integer number of augs. This should support both for now.
+	const reqDaedalusAugs = bitNodeMults.DaedalusAugsRequirement < 2 ? Math.round(30 * bitNodeMults.DaedalusAugsRequirement) : bitNodeMults.DaedalusAugsRequirement;
+	if (playerInstalledAugCount !== null && playerInstalledAugCount < reqDaedalusAugs)
+		return daedalusUnavailable = true; // Won't be able to unlock daedalus this ascend
+	// If we have sufficient augs and hacking, all we need is the money (100b)
+	const totalWorth = player.money + stocksValue;
+	if (totalWorth > 100E9 && player.money < 100E9) {
+		reserveForDaedalus = true;
+		log(ns, "INFO: Temporarily liquidating stocks to earn an invite to Daedalus...", true, 'info');
+		launchScriptHelper(ns, 'stockmaster.js', ['--liquidate']);
+	}
 }
 
-/** In order to pass in args to pass along to the startup/completion script, they may have to be quoted, when given as
- * parameters to this script, but those quotes will have to be stripped when passing these along to a subsequent script as raw strings.
- * @param {string[]} args - The the array-argument passed to the script.
- * @returns {string[]} The the array-argument unescaped (or deserialized if a single argument starting with '[' was supplied]). */
-export function unEscapeArrayArgs(args) {
-    // For convenience, also support args as a single stringified array
-    if (args.length == 1 && args[0].startsWith("[")) return JSON.parse(args[0]);
-    // Otherwise, args wrapped in quotes should have those quotes removed.
-    const escapeChars = ['"', "'", "`"];
-    return args.map(arg => escapeChars.some(c => arg.startsWith(c) && arg.endsWith(c)) ? arg.slice(1, -1) : arg);
+/** Logic run periodically throughout the BN to see if we are ready to complete it.
+ * @param {NS} ns 
+ * @param {Player} player */
+async function checkIfBnIsComplete(ns, player) {
+	if (bnCompletionSuppressed) return true;
+	if (wdHack === null) { // If we haven't checked yet, see if w0r1d_d43m0n (server) has been unlocked and get its required hack level
+		wdHack = await getNsDataThroughFile(ns, 'ns.scan("The-Cave").includes("w0r1d_d43m0n") ? ' +
+			'ns.getServerRequiredHackingLevel("w0r1d_d43m0n"): -1',
+			'/Temp/wd-hackingLevel.txt');
+		if (wdHack == -1) wdHack = Number.POSITIVE_INFINITY; // Cannot stringify infinity, so use -1 in transit
+	}
+	// Detect if a BN win condition has been met
+	let bnComplete = player.skills.hacking >= wdHack;
+	if (!bnComplete && player.inBladeburner && (7 in unlockedSFs)) // Detect the BB win condition
+		bnComplete = await getNsDataThroughFile(ns,
+			`ns.bladeburner.getActionCountRemaining('blackop', 'Operation Daedalus') === 0`,
+			'/Temp/bladeburner-completed.txt');
+	if (!bnComplete) return false; // No win conditions met
+
+	const text = `BN ${player.bitNodeN}.${(dictOwnedSourceFiles[player.bitNodeN] || 0) + 1} completed at ` +
+		`${formatDuration(player.playtimeSinceLastBitnode)} ` +
+		`(${(player.skills.hacking >= wdHack ? `hack (${wdHack.toFixed(0)})` : 'bladeburner')} win condition)`;
+	await persist_log(ns, text);
+	log(ns, `SUCCESS: ${text}`, true, 'success');
+
+	// Run the --on-completion-script if specified
+	if (options['on-completion-script']) {
+		pid = launchScriptHelper(ns, options['on-completion-script'], unEscapeArrayArgs(options['on-completion-script-args']), false);
+		if (pid) await waitForProcessToComplete(ns, pid);
+	}
+
+	// Check if there is some reason not to automatically destroy this BN
+	if (player.bitNodeN == 10) { // Suggest the user doesn't reset until they buy all sleeves and max memory
+		const shouldHaveSleeveCount = Math.min(8, 6 + dictOwnedSourceFiles[10]);
+		const numSleeves = await getNsDataThroughFile(ns, `ns.sleeve.getNumSleeves()`, '/Temp/sleeve-count.txt');
+		if (numSleeves < shouldHaveSleeveCount) {
+			log(ns, `WARNING: Detected that you only have ${numSleeves} sleeves, but you could have ${shouldHaveSleeveCount}.` +
+				`\nTry not to leave BN10 before buying all you can from the faction "The Covenant", especially sleeve memory!` +
+				`\nNOTE: You can ONLY buy sleeves/memory from The Covenant in BN10, which is why it's important to do this before you leave.`);
+			return bnCompletionSuppressed = true;
+		}
+	}
+	if (options['disable-auto-destroy-bn']) {
+		log(ns, `--disable-auto-destroy-bn is set, you can manually exit the bitnode when ready.`, true);
+		return bnCompletionSuppressed = true;
+	}
+	if (!(4 in dictOwnedSourceFiles)) {
+		log(ns, `You do not own SF4, so you must manually exit the bitnode (` +
+			`${player.skills.hacking >= wdHack ? "by hacking W0r1dD43m0n" : "on the bladeburner BlackOps tab"}).`, true);
+		return bnCompletionSuppressed = true;
+	}
+
+	// Clean out our temp folder and flags so we don't have any stale data when the next BN starts.
+	let pid = launchScriptHelper(ns, 'cleanup.js');
+	if (pid) await waitForProcessToComplete(ns, pid);
+
+	// Use the new special singularity function to automate entering a new BN
+	pid = await runCommand(ns, `ns.singularity.destroyW0r1dD43m0n(ns.args[0], ns.args[1])`,
+		'/Temp/singularity-destroyW0r1dD43m0n.js', [nextBn, ns.getScriptName()]);
+	if (pid) {
+		log(ns, `SUCCESS: Initiated process ${pid} to execute 'singularity.destroyW0r1dD43m0n' with args: [${nextBn}, ${ns.getScriptName()}]`, true, 'success')
+		await waitForProcessToComplete(ns, pid);
+		log(ns, `WARNING: Process is done running, why am I still here? Sleeping 10 seconds...`, true, 'error')
+		await ns.sleep(10000);
+	}
+	await persist_log(ns, log(ns, `ERROR: Tried destroy the bitnode (pid=${pid}), but we're still here...`, true, 'error'));
+	//return bnCompletionSuppressed = true; // Don't suppress bn Completion, try again on our next loop.
+}
+
+/** Helper to get a list of all scripts running (on home)
+ * @param {NS} ns */
+async function getRunningScripts(ns) {
+	return await getNsDataThroughFile(ns, 'ns.ps(ns.args[0])', '/Temp/ps.txt', ['home']);
+}
+
+/** Helper to get the first instance of a running script by name.
+ * @param {NS} ns 
+ * @param {ProcessInfo[]} runningScripts - (optional) Cached list of running scripts to avoid repeating this expensive request
+ * @param {(value: ProcessInfo, index: number, array: ProcessInfo[]) => unknown} filter - (optional) Filter the list of processes beyond just matching on the script name */
+function findScriptHelper(baseScriptName, runningScripts, filter = null) {
+	return runningScripts.filter(s => s.filename == getFilePath(baseScriptName) && (!filter || filter(s)))[0];
+}
+
+/** Helper to kill a running script instance by name
+ * @param {NS} ns 
+ * @param {ProcessInfo[]} runningScripts - (optional) Cached list of running scripts to avoid repeating this expensive request
+ * @param {ProcessInfo} processInfo - (optional) The process to kill, if we've already found it in advance */
+async function killScript(ns, baseScriptName, runningScripts = null, processInfo = null) {
+	processInfo = processInfo || findScriptHelper(baseScriptName, runningScripts || (await getRunningScripts(ns)))
+	if (processInfo) {
+		log(ns, `INFO: Killing script ${baseScriptName} with pid ${processInfo.pid} and args: [${processInfo.args.join(", ")}].`, false, 'info');
+		return await getNsDataThroughFile(ns, 'ns.kill(ns.args[0])', '/Temp/kill.txt', [processInfo.pid]);
+	}
+	log(ns, `WARNING: Skipping request to kill script ${baseScriptName}, no running instance was found...`, false, 'warning');
+	return false;
+}
+
+/** Logic to ensure scripts are running to progress the BN
+ * @param {NS} ns 
+ * @param {Player} player */
+async function checkOnRunningScripts(ns, player) {
+	if (lastScriptsCheck > Date.now() - options['interval-check-scripts']) return;
+	lastScriptsCheck = Date.now();
+	const runningScripts = await getRunningScripts(ns); // Cache the list of running scripts for the duration
+	const findScript = (baseScriptName, filter = null) => findScriptHelper(baseScriptName, runningScripts, filter);
+
+	// Kill any scripts that were flagged for restart
+	while (killScripts.length > 0)
+		await killScript(ns, killScripts.pop(), runningScripts);
+
+	// Hold back on launching certain scripts if we are low on home RAM
+	const homeRam = await getNsDataThroughFile(ns, `ns.getServerMaxRam(ns.args[0])`, `/Temp/getServerMaxRam.txt`, ["home"]);
+
+	// Launch stock-master in a way that emphasizes it as our main source of income early-on
+	if (!findScript('stockmaster.js') && !reserveForDaedalus && homeRam >= 32)
+		launchScriptHelper(ns, 'stockmaster.js', [
+			"--fracH", 0.1, // Increase the default proportion of money we're willing to hold as stock, it's often our best source of income
+			"--reserve", 0, // Override to ignore the global reserve.txt. Any money we reserve can more or less safely live as stocks
+		]);
+
+	// Launch sleeves and allow them to also ignore the reserve so they can train up to boost gang unlock speed
+	if ((10 in unlockedSFs) && (2 in unlockedSFs) && !findScript('sleeve.js'))
+		launchScriptHelper(ns, 'sleeve.js', ["--training-reserve", 300000]); // Only avoid training away our casino seed money
+
+	// Spend hacknet hashes on our boosting best hack-income server once established
+	const spendingHashesOnHacking = findScript('spend-hacknet-hashes.js', s => s.args.includes("--spend-on-server"))
+	if ((9 in unlockedSFs) && !spendingHashesOnHacking && player.playtimeSinceLastAug >= options['time-before-boosting-best-hack-server'] && !(player.bitNodeN == 8)) {
+		const strServerIncomeInfo = ns.read('/Temp/analyze-hack.txt');	// HACK: Steal this file that Daemon also relies on
+		if (strServerIncomeInfo) {
+			const incomeByServer = JSON.parse(strServerIncomeInfo);
+			const dictServerHackReqs = await getNsDataThroughFile(ns, 'Object.fromEntries(ns.args.map(server => [server, ns.getServerRequiredHackingLevel(server)]))',
+				'/Temp/servers-hack-req.txt', incomeByServer.map(s => s.hostname));
+			const [bestServer, gain] = incomeByServer.filter(s => dictServerHackReqs[s.hostname] <= player.skills.hacking)
+				.reduce(([bestServer, bestIncome], target) => target.gainRate > bestIncome ? [target.hostname, target.gainRate] : [bestServer, bestIncome], [null, 0]);
+			//ns.getServerRequiredHackingLevel
+			log(ns, `Identified that the best hack income server is ${bestServer} worth ${formatMoney(gain)}/sec.`)
+			launchScriptHelper(ns, 'spend-hacknet-hashes.js',
+				["--liquidate", "--spend-on", "Increase_Maximum_Money", "--spend-on", "Reduce_Minimum_Security", "--spend-on-server", bestServer]);
+		}
+	}
+
+	// Determine the arguments we want to run daemon.js with. We will either pass these directly, or through stanek.js if we're running it first.	
+	const hackThreshold = options['high-hack-threshold']; // If player.skills.hacking level is about 8000, run in "start-tight" mode
+	const daemonArgs = (player.skills.hacking < hackThreshold || player.bitNodeN == 8) ? [] :
+		// Launch daemon in "looping" mode if we have sufficient hack level
+		["--looping-mode", "--cycle-timing-delay", 2000, "--queue-delay", "10", "--initial-max-targets", "63",
+			"--stock-manipulation-focus", "--silent-misfires", "--no-share",
+			// Use recovery thread padding sparingly until our hack level is significantly higher
+			"--recovery-thread-padding", 1.0 + (player.skills.hacking - hackThreshold) / 1000.0];
+	daemonArgs.push('--disable-script', getFilePath('work-for-factions.js')); // We will run this ourselves with args of our choosing
+	// Hacking earns no money in BN8, so prioritize XP
+	if (player.bitNodeN == 8) daemonArgs.push("--xp-only");
+	// By default, don't join bladeburner, since it slows BN12 progression by requiring combat augs not used elsewhere
+	if (options['enable-bladeburner']) daemonArgs.push('--run-script', getFilePath('bladeburner.js'));
+	// If we have SF4, but not level 3, instruct daemon.js to reserve additional home RAM
+	if ((4 in unlockedSFs) && unlockedSFs[4] < 3)
+		daemonArgs.push('--reserved-ram', 32 * (unlockedSFs[4] == 2 ? 4 : 16));
+
+	// Once stanek's gift is accepted, launch it once per reset (Note: stanek's gift is auto-purchased by faction-manager.js on your first install)
+	let stanekRunning = (13 in unlockedSFs) && findScript('stanek.js') !== undefined;
+	if ((13 in unlockedSFs) && installedAugmentations.includes(`Stanek's Gift - Genesis`) && !stanekLaunched && !stanekRunning) {
+		stanekLaunched = true; // Once we've know we've launched stanek once, we never have to again this reset.
+		const stanekArgs = ["--on-completion-script", getFilePath('daemon.js')]
+		if (daemonArgs.length >= 0) stanekArgs.push("--on-completion-script-args", JSON.stringify(daemonArgs)); // Pass in all the args we wanted to run daemon.js with
+		launchScriptHelper(ns, 'stanek.js', stanekArgs);
+		stanekRunning = true;
+	}
+
+	// Launch or re-launch daemon with the desired arguments (only if it wouldn't get in the way of stanek charging)
+	const daemon = findScript('daemon.js');
+	if ((!daemon || player.skills.hacking >= hackThreshold && !daemon.args.includes("--looping-mode") && !daemon.args.includes("--xp-only")) && !stanekRunning) {
+		if (player.skills.hacking >= hackThreshold && !(player.bitNodeN == 8))
+			log(ns, `INFO: Hack level (${player.skills.hacking}) is >= ${hackThreshold} (--high-hack-threshold): Starting daemon.js in high-performance hacking mode.`);
+		launchScriptHelper(ns, 'daemon.js', daemonArgs);
+		daemonStartTime = Date.now();
+	}
+
+	// Default work for faction args we think are ideal for speed-running BNs
+	const workForFactionsArgs = [
+		"--fast-crimes-only", // Essentially means we do mug until we can do homicide, then stick to homicide
+		"--get-invited-to-every-faction" // Join factions even we have all their augs. Good for having NeuroFlux providers
+	];
+	if (!options['enable-bladeburner']) workForFactionsArgs.push("--no-bladeburner-check")
+	// The following args are ideal when running 'work-for-factions.js' to rush unlocking gangs (earn karma)
+	const rushGangsArgs = workForFactionsArgs.concat(...[ // Everything above, plus...
+		"--crime-focus", // Start off by trying to work for each of the crime factions (generally have combat reqs)
+		"--training-stat-per-multi-threshold", 200, // Be willing to spend more time grinding for stats rather than skipping a faction
+		"--prioritize-invites"]); // Don't actually start working for factions until we've earned as many invites as we think we can
+	// If gangs are unlocked, micro-manage how 'work-for-factions.js' is running by killing off unwanted instances
+	if (2 in unlockedSFs) {
+		// Check if we've joined a gang yet. (Never have to check again once we know we're in one)
+		if (!playerInGang) playerInGang = await getNsDataThroughFile(ns, 'ns.gang.inGang()', '/Temp/gang-inGang.txt');
+		rushGang = !options['disable-rush-gangs'] && !playerInGang;
+		// Detect if a 'work-for-factions.js' instance is running with args that don't match our goal. We aren't too picky,
+		// (so the player can run with custom args), but should have --crime-focus if (and only if) we're still working towards a gang.
+		const wrongWork = findScript('work-for-factions.js', !rushGang ? s => s.args.includes("--crime-focus") :
+			s => !rushGangsArgs.every(a => s.args.includes(a))); // Require all rushGangsArgs if we're not in a gang yet.
+		// If running with the wrong args, kill it so we can start it with the desired args
+		if (wrongWork) await killScript(ns, 'work-for-factions.js', null, wrongWork);
+
+		// Start gangs immediately (even though daemon would eventually start it) since we want any income they provide right away after an ascend
+		// TODO: Consider monitoring gangs territory progress and increasing their budget / decreasing their reserve to help kick-start them
+		if (playerInGang && !findScript('gangs.js'))
+			launchScriptHelper(ns, 'gangs.js');
+	}
+
+	// Launch work-for-factions if it isn't already running (rules for maybe killing unproductive instances are above)
+	// Note: We delay launching our own 'work-for-factions.js' until daemon has warmed up, so we don't steal it's "kickstartHackXp" study focus
+	if ((4 in unlockedSFs) && !findScript('work-for-factions.js') && Date.now() - daemonStartTime > 30000) {
+		// If we're trying to rush gangs, run in such a way that we will spend most of our time doing crime, reducing Karma (also okay early income)
+		// NOTE: Default work-for-factions behaviour is to spend hashes on coding contracts, which suits us fine
+		launchScriptHelper(ns, 'work-for-factions.js', rushGang ? rushGangsArgs : workForFactionsArgs);
+	}
+}
+
+/** Logic to steal 10b from the casino
+ * @param {NS} ns 
+ * @param {Player} player */
+async function maybeDoCasino(ns, player) {
+	if (ranCasino) return;
+	const casinoRanFileSet = ns.read(casinoFlagFile);
+	const cashRootBought = installedAugmentations.includes(`CashRoot Starter Kit`);
+	// If the casino flag file is already set in first 10 minutes of the reset, and we don't have anywhere near the 10B it should give,
+	// it's likely a sign that the flag is wrong and we should run cleanup and let casino get run again to be safe.
+	if (player.playtimeSinceLastAug < 10 * 60 * 1000 && casinoRanFileSet && player.money + (await getStocksValue(ns)) < 8E9) {
+		launchScriptHelper(ns, 'cleanup.js');
+		await ns.sleep(200); // Wait a short while for the dust to settle.
+	} else if (casinoRanFileSet)
+		return ranCasino = true;
+	//If it's been less than 1 minute, wait a while to establish income
+	//Unless we have CashRoot Starter Kit, at which point we should head straight to the casino
+	//Or if BN8, as that also gives us plenty of starter cash to casino immediately
+	if (player.playtimeSinceLastAug < 60000 && !cashRootBought && !player.bitNodeN == 8)
+		return;
+	//If we're making more than ~5b / minute, no need to run casino.
+	//Unless BN8, if BN8 we always need casino cash bootstrap
+	//Since it's possible that the CashRoot Startker Kit could give a false income velocity, account for that.
+	if ((cashRootBought ? player.money - 1e6 : player.money) / player.playtimeSinceLastAug > 5e9 / 60000 && !player.bitNodeN == 8)
+		return ranCasino = true;
+	if (player.money > 10E9) // If we already have 10b, assume we ran and lost track, or just don't need the money
+		return ranCasino = true;
+	if (player.money < 250000)
+		return; // We need at least 200K (and change) to run casino so we can travel to aevum
+
+	// Run casino.js (and expect ourself to get killed in the process)
+	// Make sure "work-for-factions.js" is dead first, lest it steal focus and break the casino script before it has a chance to kill all scripts.
+	await killScript(ns, 'work-for-factions.js');
+	// Kill any action, in case we are studying or working out, as it might steal focus or funds before we can bet it at the casino.
+	if (4 in unlockedSFs) // No big deal if we can't, casino.js has logic to find the stop button and click it.
+		await getNsDataThroughFile(ns, `ns.singularity.stopAction()`, '/Temp/stop-action.txt');
+
+	const pid = launchScriptHelper(ns, 'casino.js', ['--kill-all-scripts', true, '--on-completion-script', ns.getScriptName()]);
+	if (pid) {
+		await waitForProcessToComplete(ns, pid);
+		await ns.sleep(1000); // Give time for this script to be killed if the game is being restarted by casino.js
+		// If we didn't get killed, see if casino.js discovered it was already previously kicked out
+		if (ns.read(casinoFlagFile)) return ranCasino = true;
+		// Otherwise, something went wrong
+		log(ns, `ERROR: Something went wrong. Casino.js ran, but we haven't been killed, and the casino flag file "${casinoFlagFile}" isn't set.`)
+	}
+}
+
+/** Retrieves the last faction manager output file, parses, and types it.
+ * @param {NS} ns 
+ * @returns {{ affordable_nf_count: number, affordable_augs: [string], owned_count: number, unowned_count: number, total_rep_cost: number, total_aug_cost: number }}
+ */
+function getFactionManagerOutput(ns) {
+	const facmanOutput = ns.read(factionManagerOutputFile)
+	return !facmanOutput ? null : JSON.parse(facmanOutput)
+}
+
+/** Logic to detect if it's a good time to install augmentations, and if so, do so
+ * @param {NS} ns 
+ * @param {Player} player */
+async function maybeInstallAugmentations(ns, player) {
+	if (!(4 in unlockedSFs)) {
+		setStatus(ns, `No singularity access, so you're on your own. You should manually work for factions and install augmentations!`);
+		return false; // Cannot automate augmentations or installs without singularity
+	}
+	// If we previously attempted to reserve money for an augmentation purchase order, do a fresh facman run to ensure it's still available
+	if (reservedPurchase && installCountdown <= Date.now()) {
+		log(ns, "INFO: Manually running faction-manager.js to ensure previously reserved purchase is still obtainable.");
+		await ns.write(factionManagerOutputFile, "", "w"); // Reset the output file to ensure it isn't stale
+		const pid = launchScriptHelper(ns, 'faction-manager.js');
+		await waitForProcessToComplete(ns, pid, true); // Wait for the script to shut down (and output to be generated)
+	}
+
+	// Grab the latest output from faction manager to see if it's a good time to reset
+	const facman = getFactionManagerOutput(ns);
+	if (!facman) {
+		setStatus(ns, `Faction manager output not available. Will try again later.`);
+		return reservedPurchase = 0;
+	}
+	const affordableAugCount = facman.affordable_augs.length;
+	playerInstalledAugCount = facman.owned_count;
+
+	// Determine whether we can afford enough augmentations to merit a reset
+	const reducedAugReq = Math.floor(options['reduced-aug-requirement-per-hour'] * player.playtimeSinceLastAug / 3.6E6);
+	const augsNeeded = Math.max(1, options['install-at-aug-count'] - reducedAugReq);
+	const augsNeededInclNf = Math.max(1, options['install-at-aug-plus-nf-count'] - reducedAugReq);
+	const uniqueAugCount = affordableAugCount - Math.sign(facman.affordable_nf_count); // Don't count NF if included
+	let totalCost = facman.total_rep_cost + facman.total_aug_cost;
+	const augSummary = `${uniqueAugCount} of ${facman.unowned_count - 1} remaining augmentations` +
+		(facman.affordable_nf_count > 0 ? ` + ${facman.affordable_nf_count} levels of NeuroFlux.` : '.') +
+		(uniqueAugCount > 0 ? `\n  Augs: [\"${facman.affordable_augs.join("\", \"")}\"]` : '');
+	let resetStatus = `Reserving ${formatMoney(totalCost)} to install ${augSummary}`
+	let shouldReset = options['install-for-augs'].some(a => facman.affordable_augs.includes(a)) ||
+		affordableAugCount >= augsNeeded || (affordableAugCount + facman.affordable_nf_count - 1) >= augsNeededInclNf;
+	// If we are in Daedalus, and we do not yet have enough favour to unlock rep donations with Daedalus,
+	// but we DO have enough rep to earn that favor on our next restart, trigger an install immediately (need at least 1 aug)
+	if (player.factions.includes("Daedalus") && ns.read("/Temp/Daedalus-donation-rep-attained.txt")) {
+		shouldReset = true;
+		resetStatus = `We have enough reputation with Daedalus to unlock donations on our next reset.\n${resetStatus}`;
+		if (totalCost == 0) totalCost = 1; // Hack, logic below expects some non-zero reserve in preparation for ascending.
+	}
+
+	// If not ready to reset, set a status with our progress and return
+	if (!shouldReset) {
+		setStatus(ns, `Currently at ${formatDuration(player.playtimeSinceLastAug)} since last aug. ` +
+			`Waiting for ${augsNeeded} new augs (or ${augsNeededInclNf} including NeuroFlux levels) before installing.` +
+			`\nCan currently get: ${augSummary}` +
+			`\n  Total Cost: ${formatMoney(totalCost)} (\`run faction-manager.js\` for details)`, augSummary);
+		return reservedPurchase = 0; // If we were previously reserving money for a purchase, reset that flag now
+	}
+	// If we want to reset, but there is a reason to delay, don't reset
+	if (await shouldDelayInstall(ns, player, facman)) // If we're currently in a state where we should not be resetting, skip reset logic
+		return reservedPurchase = 0;
+
+	// Ensure the money needed for the above augs doesn't get ripped out from under us by reserving it and waiting one more loop
+	if (reservedPurchase < totalCost) {
+		if (reservedPurchase != 0) // If we were already reserving for a purchase and the nubmer went up, log a notice of the timer being reset.
+			log(ns, `INFO: The augmentation purchase we can afford has increased from ${formatMoney(reservedPurchase)} ` +
+				`to ${formatMoney(totalCost)}. Resetting the timer before we install augmentations.`);
+		installCountdown = Date.now() + options['install-countdown']; // Each time we can afford more augs, reset the install delay timer
+		await ns.write("reserve.txt", totalCost, "w"); // Should prevent other scripts from spending this money
+	}
+	// We must wait until the configured cooldown elapses before we install augs.
+	if (installCountdown > Date.now()) {
+		resetStatus += `\n  Waiting for ${formatDuration(options['install-countdown'])} (--install-countdown) ` +
+			`to elapse before we install, in case we're close to being able to purchase more augmentations...`;
+		setStatus(ns, resetStatus);
+		ns.toast(`Heads up: Autopilot plans to reset in ${formatDuration(installCountdown - Date.now())}`, 'info');
+		return reservedPurchase = totalCost;
+	}
+
+	// Otherwise, we've got the money reserved, we can afford the augs, we should be confident to ascend
+	const resetLog = `Invoking ascend.js at ${formatDuration(player.playtimeSinceLastAug).padEnd(11)} since last aug to install: ${augSummary}`;
+	await persist_log(ns, log(ns, resetLog, true, 'info'));
+
+	// Kick off ascend.js
+	let errLog;
+	const ascendArgs = ['--install-augmentations', true, '--on-reset-script', ns.getScriptName()]
+	if (affordableAugCount == 0) // If we know we have 0 augs, but still wish to reset, we must enable soft resetting
+		ascendArgs.push("--allow-soft-reset")
+	let pid = launchScriptHelper(ns, 'ascend.js', ascendArgs);
+	if (pid) {
+		await waitForProcessToComplete(ns, pid, true); // Wait for the script to shut down (Ascend should get killed as it does, since the BN will be rebooting)
+		await ns.sleep(1000); // If we've been scheduled to be killed, awaiting an NS function should trigger it?
+		errLog = `ERROR: ascend.js ran, but we're still here. Something must have gone wrong. Will try again later`;
+	} else
+		errLog = `ERROR: Failed to launch ascend.js (pid == 0). Will try again later`;
+	// If we got this far, something went wrong
+	await persist_log(ns, log(ns, errLog, true, 'error'));
+}
+
+/** Logic to detect if we are close to a milestone and should postpone installing augmentations until it is hit
+ * @param {NS} ns 
+ * @param {Player} player
+ * @param {{ affordable_nf_count: number, affordable_augs: [string], owned_count: number, unowned_count: number, total_rep_cost: number, total_aug_cost: number }} facmanOutput
+*/
+async function shouldDelayInstall(ns, player, facmanOutput) {
+	// Are we close to being able to afford 4S TIX data?
+	if (!options['disable-wait-for-4s'] && !(await getNsDataThroughFile(ns, `ns.stock.has4SDataTIXAPI()`, `/Temp/stock-has4SDataTIXAPI.txt`))) {
+		const totalWorth = player.money + await getStocksValue(ns);
+		const has4S = await getNsDataThroughFile(ns, `ns.stock.has4SData()`, `/Temp/stock-has4SData.txt`);
+		const totalCost = 25E9 * (bitnodeMults?.FourSigmaMarketDataApiCost || 1) +
+			(has4S ? 0 : 1E9 * (bitnodeMults?.FourSigmaMarketDataCost || 1));
+		const ratio = totalWorth / totalCost;
+		// If we're e.g. 50% of the way there, hold off, regardless of the '--wait-for-4s' setting
+		// TODO: If ratio is > 1, we can afford it - but stockmaster won't buy until it has e.g. 20% more than the cost
+		//       (so it still has money to invest). It doesn't know we want to restart ASAP. Perhaps we should purchase ourselves?
+		if (ratio >= options['wait-for-4s-threshold']) {
+			setStatus(ns, `Not installing until scripts purchase the 4SDataTixApi because we have ` +
+				`${(100 * totalWorth / totalCost).toFixed(0)}% of the cost (controlled by --wait-for-4s-threshold)`);
+			return true;
+		}
+	}
+	// In BN8, money is hard to come by, so if we're in Daedalus, but can't access TRP rep yet, wait until we have
+	// enough rep, or enough money to donate for rep to buy TRP (Reminder: donations always unlocked in BN8)
+	if (player.bitNodeN == 8 && player.factions.includes("Daedalus") && (wdHack || 0) == 0) {
+		// Sanity check, ensure the player hasn't manually purchased (but not yet installed) TRP
+		const ownedAugmentations = await getNsDataThroughFile(ns, `ns.singularity.getOwnedAugmentations(true)`, '/Temp/player-augs-purchased.txt');
+		if (!facmanOutput.affordable_augs.includes("The Red Pill") && !ownedAugmentations.includes("The Red Pill")) {
+			setStatus(ns, `Not installing until we have enough Daedalus rep to install TRP on our next reset.`)
+			return true;
+		}
+	}
+	// TODO: Bladeburner black-op in progress
+	// TODO: Close to the rep needed for unlocking donations with a new faction?
+	return false;
+}
+
+/** Consolidated logic for all the times we want to reserve money
+ * @param {NS} ns 
+ * @param {Player} player */
+async function manageReservedMoney(ns, player, stocksValue) {
+	if (reservedPurchase) return; // Do not mess with money reserved for installing augmentations
+	const currentReserve = Number(ns.read("reserve.txt") || 0);
+	if (reserveForDaedalus) // Reserve 100b to get the daedalus invite
+		return currentReserve == 100E9 ? true : await ns.write("reserve.txt", 100E9, "w");
+	// Otherwise, reserve money for stocks for a while, as it's our main source of income early in the BN
+	// It also acts as a decent way to save up for augmentations
+	const minStockValue = 8E9; // At a minimum 8 of the 10 billion earned from the casino must be reserved for buying stock
+	// As we earn more money, reserve a percentage of it for further investing in stock. Decrease this as the BN progresses.
+	const minStockPercent = Math.max(0, 0.8 - 0.1 * player.playtimeSinceLastBitnode / 3.6E6); // Reduce by 10% per hour in the BN
+	const reserveCap = 1E12; // As we start start to earn crazy money, we will hit the stock market cap, so cap the maximum reserve
+	// Dynamically update reserved cash based on how much money is already converted to stocks.
+	const reserve = Math.min(reserveCap, Math.max(0, player.money * minStockPercent, minStockValue - stocksValue));
+	return currentReserve == reserve ? true : await ns.write("reserve.txt", reserve, "w"); // Reserve for stocks
+	// NOTE: After several iterations, I decided that the above is actually best to keep in all scenarios:
+	// - Casino.js ignores the reserve, so the above takes care of ensuring our casino seed money isn't spent
+	// - In low-income situations, stockmaster will be our best source of income. We invoke it such that it ignores 
+	//	 the global reserve, so this 8B is for stocks only. The 2B remaining is plenty to kickstart the rest.
+	// - Once high-hack/gang income is achieved, this 8B will not be missed anyway. 
+	/*
+	if(!ranCasino) { // In practice, 
+		await ns.write("reserve.txt", 300000, "w"); // Prevent other scripts from spending our casino seed money
+		return moneyReserved = true;
+	}
+	// Otherwise, clear any reserve we previously had
+	if(moneyReserved) await ns.write("reserve.txt", 0, "w"); // Remove the casino reserve we would have placed
+	return moneyReserved = false;
+	*/
+}
+
+/** Helper to launch a script and log whether if it succeeded or failed
+ * @param {NS} ns */
+function launchScriptHelper(ns, baseScriptName, args = [], convertFileName = true) {
+	ns.tail(); // If we're going to be launching scripts, show our tail window so that we can easily be killed if the user wants to interrupt.
+	const run = ns.run.bind(ns);
+	const pid = run(convertFileName ? getFilePath(baseScriptName) : baseScriptName, 1, ...args);
+	if (!pid)
+		log(ns, `ERROR: Failed to launch ${baseScriptName} with args: [${args.join(", ")}]`, true, 'error');
+	else
+		log(ns, `INFO: Launched ${baseScriptName} (pid: ${pid}) with args: [${args.join(", ")}]`, true);
+	return pid;
+}
+
+let lastStatusLog = ""; // The current or last-assigned long-term status (what this script is waiting to happen)
+
+/** Helper to set a global status and print it if it changes
+ * @param {NS} ns */
+function setStatus(ns, status, uniquePart = null) {
+	uniquePart = uniquePart || status; // Can be used to consider a logs "the same" (not worth re-printing) even if they have some different text
+	if (lastStatusLog == uniquePart) return;
+	lastStatusLog = uniquePart
+	log(ns, status);
+}
+
+/** Append the specified text (with timestamp) to a persistent log in the home directory
+ * @param {NS} ns */
+async function persist_log(ns, text) {
+	await ns.write(persistentLog, `${(new Date()).toISOString().substring(0, 19)} ${text}\n`, "a")
 }
