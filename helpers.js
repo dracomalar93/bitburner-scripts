@@ -80,10 +80,13 @@ export function formatDuration(duration) {
 
 /** Generate a hashCode for a string that is pretty unique most of the time */
 export function hashCode(s) {
-    if (!s) {
-        return 0;
-    } {
-        return s.split("").reduce(function (a, b) { a = ((a << 5) - a) + b.charCodeAt(0); return a & a }, 0);
+  if (!s) {
+    return 0;
+  }
+  return s.split("").reduce(function (a, b) {
+    a = ((a << 5) - a) + b.charCodeAt(0);
+    return a & a;
+  }, 0);
 }
 
 /** @param {NS} ns **/
